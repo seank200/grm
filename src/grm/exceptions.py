@@ -1,23 +1,28 @@
-import subprocess
 from pathlib import Path
 from typing import Optional
+from subprocess import CalledProcessError
 
 
 HOME = Path.home()
 
 
 class CommandExit(Exception):
-    def __init__(self, returncode: int = 1, *args: object):
+    def __init__(self, returncode: int, *args):
         super().__init__(*args)
-        self.returncode = returncode
+        self.returncode: int = returncode
 
 
-class CommandError(CommandExit):
-    def __init__(self, *args: object):
+class CommandAbort(CommandExit):
+    def __init__(self, *args):
         super().__init__(1, *args)
 
 
-class SubprocError(CommandError):
+class CommandError(CommandExit):
+    def __init__(self, *args):
+        super().__init__(1, *args)
+
+
+class SubprocessError(CommandError):
     @staticmethod
     def format_proc(path, returncode, cmd, stdout, stderr) -> str:
         s = ""
@@ -36,24 +41,26 @@ class SubprocError(CommandError):
 
     def __init__(
         self,
-        cpe: subprocess.CalledProcessError,
+        cpe: CalledProcessError,
         *args,
-        path: Optional[Path]=None
+        path: Optional[Path] = None
     ):
         super().__init__(*args)
-        self.cpe: subprocess.CalledProcessError = cpe
-        self.path: Optional[Path] = path
+        self.cpe = cpe
+        self.path = path
 
     def __str__(self):
-        return SubprocError.format_proc(
-            self.path,
-            self.cpe.returncode,
-            self.cpe.cmd,
-            self.cpe.stdout,
-            self.cpe.stderr,
-        )
+        return super().__str__() \
+            + "\n" \
+            + SubprocessError.format_proc(
+                self.path,
+                self.cpe.returncode,
+                self.cpe.cmd,
+                self.cpe.stdout,
+                self.cpe.stderr,
+            )
 
 
 class InvalidOptsError(CommandExit):
-    def __init__(self, *args: object):
+    def __init__(self, *args):
         super().__init__(2, *args)

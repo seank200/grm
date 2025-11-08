@@ -1,5 +1,5 @@
 [project]
-name = "gs"
+name = "grm"
 version = "0.1.0"
 description = "Manage git repositories"
 authors = [
@@ -17,10 +17,10 @@ dependencies = [
 ]
 
 [project.scripts]
-gs = "gs.cli:main"
+grm = "grm.cli:main"
 
 [tool.poetry]
-packages = [{include = "gs", from = "src"}]
+packages = [{include = "grm", from = "src"}]
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]

@@ -1,8 +1,9 @@
+import logging
 import re
 from .branch import GitBranch
 from dataclasses import dataclass
-from gs.exceptions import CommandError
-from gs.utils import run
+from grm.exceptions import CommandError
+from grm.utils import run
 from pathlib import Path
 from typing import Optional
 
@@ -11,9 +12,9 @@ NO_COMMITS = "## No commits yet "
 DETACHED = "## HEAD (no branch)"
 UNTRACKED = "?"
 UNMODIFIED = " "
-
 PATTERN_AHEAD = re.compile(r"ahead (\d+)")
 PATTERN_BEHIND = re.compile(r"behind (\d+)")
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -88,4 +89,6 @@ def show_status(path: Path) -> GitStatus:
             if y != UNMODIFIED:
                 not_staged += 1
 
-    return GitStatus(branch, not_staged, staged, untracked)
+    status = GitStatus(branch, not_staged, staged, untracked)
+    log.debug("Checked status of %d. %s", path, status)
+    return status

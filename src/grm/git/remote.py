@@ -1,10 +1,10 @@
 import logging
 import re
-from collections.abc import Collection
 from dataclasses import dataclass
-from gs.utils import run
+from grm.utils import run
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
 
 @dataclass
@@ -13,8 +13,27 @@ class GitRemote:
     fetch: Optional[str] = None
     push: Optional[str] = None
 
+    _fetch_path: Optional[str] = None
 
-PATTERN = re.compile(r"^(\S+)\s+(\S+)\s+\((\S+))")
+    @property
+    def fetch_path(self) -> Optional[str]:
+        if self.fetch is None:
+            return None
+        
+        if self._fetch_path is None:
+            self._fetch_path = urlparse(self.fetch).path
+
+        return self._fetch_path
+    
+    def __str__(self):
+        return f"GitRemote(" \
+            + f"name='{self.name}', " \
+            + f"fetch='{self.fetch}', " \
+            + f"push='{self.push}'" \
+            + ")"
+
+
+PATTERN = re.compile(r"^(\S+)\s+(\S+)\s+\((\S+)\)")
 
 log = logging.getLogger(__name__)
 
@@ -51,4 +70,6 @@ def list_remotes(path: Path) -> dict[str, GitRemote]:
         else:
             log.warning("Ignoring invalid git remote output line: %s", line)
 
+    log.debug("Found %d remotes of %s: %s", len(remotes), path, remotes)
+    
     return remotes
