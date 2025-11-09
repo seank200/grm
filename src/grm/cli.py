@@ -2,10 +2,11 @@ import logging
 import typer
 from .context import options, configure
 from .exceptions import CommandExit, CommandError, SubprocessError, CommandAbort, InvalidOptsError
-from .fetch import app as fetch_app
 from .find import app as find_app
 from .status import app as status_app
+from .fetch import app as fetch_app
 from .switch import app as switch_app
+from .sync import app as sync_app
 from .utils import OptionDef
 from typing import Annotated, Optional
 
@@ -15,6 +16,7 @@ app.add_typer(find_app)
 app.add_typer(status_app)
 app.add_typer(fetch_app)
 app.add_typer(switch_app)
+app.add_typer(sync_app)
 log = logging.getLogger(__name__)
 
 

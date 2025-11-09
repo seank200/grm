@@ -1,8 +1,10 @@
 import logging
+import os
 import subprocess
 from .exceptions import SubprocessError
 from collections.abc import Collection, Sequence, Sized
 from pathlib import Path
+from rich.text import Text
 from typing import Optional
 
 
@@ -102,3 +104,18 @@ def pl(obj, singular: str, plural: Optional[str] = None):
         return singular.removesuffix("e").removesuffix("f") + "ves"
     
     return singular + "s"
+
+
+def num_workers(limit: int = 4) -> int:
+    cpu_count = os.cpu_count()
+    if cpu_count is None:
+        cpu_count = 1
+    return min(limit, cpu_count)
+
+
+def render_result(result: Optional[bool]) -> Text:
+    if result is None:
+        return Text("~")
+    if result:
+        return Text("SUCCESS", style="bold green")
+    return Text("ERROR", style="bold red")

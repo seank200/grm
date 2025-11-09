@@ -1,23 +1,15 @@
 import logging
 import os
-import queue
-import threading
 import typer
-from .context import console_out, console_err
-from .exceptions import SubprocessError
-from .git import GitRepo
-from .utils import OptionDef, pl
-from concurrent.futures import Future, ThreadPoolExecutor, wait
+from .context import console_out
+from .exceptions import InvalidOptsError, SubprocessError
+from .git import GitRepo, GitRemote
+from .utils import OptionDef, num_workers, pl
+from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor, wait
+from dataclasses import dataclass
 from enum import Enum
-from dataclasses import dataclass, field
 from pathlib import Path
-from rich.progress import (
-    Progress,
-    SpinnerColumn,
-    TextColumn,
-    MofNCompleteColumn,
-    TaskID
-)
 from rich.table import Table
 from rich.text import Text
 from typing import Annotated, Optional
@@ -27,343 +19,313 @@ from typing import Annotated, Optional
 class FindJob:
     path: Path
     depth: int
+    
+
+class FindOutput(Enum):
+    NARROW = "narrow"
+    WIDE = "wide"
+    WIDER = "wider"
+    RELATIVE = "relative"
+    ABSOLUTE = "absolute"
+    REMOTE = "remote"
 
 
 @dataclass
-class FindContext:
-    progress: Progress
-    task: TaskID
-    git_remote: bool
-    git_status: bool
-    query_name: Optional[str]
-    query_remote: Optional[str]
-    jobs: queue.Queue[FindJob] = field(default_factory=queue.Queue)
-    running: bool = True
-    _total: int = 1
-    _lock: threading.Lock = field(default_factory=threading.Lock)
+class RepoFilter:
+    """Repository search result filter options"""
+    name: Optional[str] = None
+    remote: Optional[str] = None
+    dirty: Optional[bool] = None
+    case_sensitive: bool = False
 
-    def put_job(self, job: FindJob):
-        self.jobs.put(job)
+    def __post_init__(self):
+        if not self.case_sensitive:
+            self.name = self.name.lower() if self.name else self.name
+            self.remote = self.remote.lower() if self.remote else self.remote
 
-    def get_job(self, timeout: Optional[float]) -> Optional[FindJob]:
-        try:
-            return self.jobs.get(block=timeout is not None, timeout=timeout)
-        except queue.Empty:
-            return None
-        
-    def add_total(self, amount: int):
-        with self._lock:
-            self._total += amount
-        self.progress.update(self.task, total=self._total)
+    def disabled(self) -> bool:
+        return self.name is None and self.remote is None \
+            and self.dirty is None
     
-    def advance(self, amount: float):
-        self.progress.advance(self.task, amount)
+    def matches_name(self, repo: GitRepo) -> bool:
+        return self.name is None \
+            or self.name \
+                in (repo.name if self.case_sensitive 
+                    else repo.name.lower())
+    
+    def matches_remote(self, remote: GitRemote):
+        return self.remote and remote.fetch and self.remote \
+            in (remote.fetch if self.case_sensitive else remote.fetch.lower())
+
+    def matches_remotes(self, repo: GitRepo) -> bool:
+        if self.remote is None:
+            return True
+        
+        for remote in repo.remotes.values():
+            if self.matches_remote(remote):
+                return True
+
+        return False
+    
+    def matches_dirty(self, repo: GitRepo) -> bool:
+        return self.dirty is None or self.dirty == repo.status.is_dirty()
+    
+    def matches(self, repo: GitRepo) -> bool:
+        return self.matches_name(repo) and self.matches_remotes(repo) \
+            and self.matches_dirty(repo)
 
 
-class FindOutput(Enum):
-    TABLE = "table"
-    NAME = "name"
-    PATH = "path"
-    REMOTE = "remote"
+@dataclass
+class RepoJob:
+    """Run selected repository commands to cache the results"""
+    remote: bool = False
+    status: bool = False
 
+
+SEP = os.sep
 
 SEARCH_PATH = OptionDef(
     "--path",
     "-p",
     envvar="SEARCH_PATH",
-    help="Directory to search"
+    help="Directory path to search for repositories"
 )
+
 SEARCH_DEPTH = OptionDef(
     "--depth",
     "-d",
     envvar="SEARCH_DEPTH",
-    help="Maximum search depth from the root path"
+    help="Maximum search depth"
 )
-QUERY_NAME = OptionDef(
+
+FILTER_NAME = OptionDef(
     "--name",
     "-n",
-    help="Filter repositories by name"
+    help="Filter by local repository name",
 )
-QUERY_REMOTE = OptionDef(
-    "--remote",
-    "-r",
-    help="Filter repositories by remote url"
+
+FILTER_REMOTE = OptionDef(
+    "--remote-url",
+    "-u",
+    help="Filter by remote url"
 )
-OUTPUT = OptionDef(
-    "--output",
-    "-o",
-    help="Output format"
+
+FILTER_DIRTY = OptionDef(
+    "--dirty/--clean",
+    help="Filter by working tree status"
 )
+
 app = typer.Typer()
 log = logging.getLogger(__name__)
 
 
-def max_workers() -> int:
-    cpu_count = os.cpu_count()
-    if cpu_count is None:
-        cpu_count = 1
+def iter_repo_dirs(
+    path: Path,
+    depth: int,
+) -> Iterator[GitRepo]:
+    """Yields git repositories within the given path"""
+    jobs: list[FindJob] = []
 
-    return min(cpu_count, 4)
+    if path.is_dir():
+        jobs.append(FindJob(path, depth))
 
-
-def _worker_job(ctx: FindContext, job: FindJob) -> Optional[GitRepo]:
-    """Check if current directory is a git repository and add new jobs
-    for subdirectories (if `job.depth` > 1)
-
-    Returns:
-        Return a `GitRepo` if the current directory is a matching git
-        repository, or None if it is not a repository, or if it does not
-        match the given search conditions.
-    """
-
-    p = job.path
-    d = job.depth
-
-    if (p / ".git").is_dir():
-        repo = GitRepo(p)
-
-        # Filter by repository name
-        if ctx.query_name:
-            if ctx.query_name not in repo.name:
-                return None
-            
-        # Filter by repository remote url
-        if ctx.running and ctx.query_remote:
-            match = False
-            for r in repo.remotes.values():
-                if r.fetch and ctx.query_remote in r.fetch:
-                    match = True
-                    break
-            if not match:
-                return None
-
-        # Pre-run git commands while we are still multi-threaded
+    while jobs:
+        job = jobs.pop()
         try:
-            if ctx.running and ctx.git_remote and not ctx.query_remote:
-                repo.remotes
-            if ctx.running and ctx.git_status:
-                repo.status
-        except SubprocessError as error:
-            log.error(
-                "Failed to inspect [cyan]%s[/cyan]. %s",
-                repo.name,
-                error,
-                extra={"markup": True},
-            )
-            return None
-
-        return repo
-
-    # Depth is 0. No need to dive in deeper
-    if d == 0:
-        return None
-
-    new_jobs = 0
-    for child in p.iterdir():
-        if not ctx.running:
-            break
-        if child.is_dir():
-            ctx.put_job(FindJob(child, d-1))
-            new_jobs += 1
-    if new_jobs > 0:
-        ctx.add_total(new_jobs)
-
-    return None
-
-
-def _worker_find_repos(ctx: FindContext) -> list[GitRepo]:
-    results: list[GitRepo] = []
-    visited = 0
-    job = ctx.get_job(0.5)
-    while job and ctx.running:
-        ctx.advance(1)
-        visited += 1
-
-        try:
-            repo = _worker_job(ctx, job)
-            if repo:
-                results.append(repo)
+            if (job.path / ".git").is_dir():
+                yield GitRepo(job.path)
+            elif job.depth > 0:
+                for child in job.path.iterdir():
+                    if child.is_dir():
+                        jobs.append(FindJob(child, job.depth-1))
         except PermissionError:
             log.error("No permission to search path: %s", job.path)
         except FileNotFoundError:
             log.error("Not searching non-existent path: %s", job.path)
         except NotADirectoryError:
             log.error("Not searching invalid path: %s", job.path)
-        except OSError:
-            log.error("Failed to search path: %s", job.path)
+
+
+def _worker_filter_repo(
+    repo: GitRepo,
+    filter: RepoFilter,
+    job: Optional[RepoJob],
+) -> Optional[GitRepo]:
+    try:
+        if not filter.matches(repo):
+            return None
+        if job is not None:
+            if job.remote:
+                repo.remotes
+            if job.status:
+                repo.status
+        return repo
+    except SubprocessError:
+        log.error("Failed to inspect [cyan]%s[/]", repo.name)
+        return None
+
+
+def filter_repos(
+    repos: Iterator[GitRepo],
+    filter: RepoFilter,
+    job: Optional[RepoJob] = None,
+) -> list[GitRepo]:
+    """Filter repository by given filter(s). Matches ALL filters when
+    multiple filters are enabled. String filters match on a case-insensitive
+    "contains" algorithm.
+    """
+
+    if filter.disabled():
+        all_repos = list(repos)
+        log.info("Found %d %s", len(all_repos), pl(all_repos, "repository"))
+        return all_repos
+
+    with ThreadPoolExecutor(max_workers=num_workers()) as executor:
+        fs = (
+            executor.submit(_worker_filter_repo, repo, filter, job)
+            for repo in repos
+        )
+
+        try:
+            done_fs = wait(fs, timeout=30.0).done
+        except KeyboardInterrupt:
+            executor.shutdown(cancel_futures=True)
             raise
 
-        if ctx.running:
-            job = ctx.get_job(0.3)
+    results: list[GitRepo] = []
+    for f in done_fs:
+        repo = f.result()
+        if repo is not None:
+            results.append(repo)
 
-    log.debug("Worker visited %d, and found %d", visited, len(results))
-
+    log.info(
+        "Matched %d out of %d %s",
+        len(results),
+        len(done_fs),
+        pl(results, "repository")
+    )
+    
     return results
 
 
 def find_repos(
-    path: Path,
-    depth: int = 1,
+    search_path: Path,
+    search_depth: int,
     *,
-    remotes: bool = False,
-    status: bool = False,
-    query_name: Optional[str] = None,
-    query_remote: Optional[str] = None,
+    filter: Optional[RepoFilter] = None,
+    job: Optional[RepoJob] = None,
 ) -> list[GitRepo]:
-    results: list[GitRepo] = []
-
-    if not path.exists() or not path.is_dir():
-        return results
-
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("{task.description}"),
-        MofNCompleteColumn(),
-        console=console_err,
-        transient=True,
-    ) as progress:
-        task = progress.add_task(f"Searching directories in {path}")
-        num_workers = max_workers()
-
-        with ThreadPoolExecutor(num_workers) as executor:
-            ctx = FindContext(
-                progress,
-                task,
-                git_remote=remotes,
-                git_status=status,
-                query_name=query_name,
-                query_remote=query_remote,
-            )
-            ctx.put_job(FindJob(path, depth))
-
-            done_fs: set[Future[list[GitRepo]]] = set()
-            while ctx.jobs.qsize() != 0:
-                log.debug("Starting %d workers", num_workers)
-
-                fs = [
-                    executor.submit(_worker_find_repos, ctx)
-                    for _ in range(num_workers)
-                ]
-
-                try:
-                    done_fs.update(wait(fs, timeout=30.0).done)
-                except KeyboardInterrupt:
-                    ctx.running = False
-                    executor.shutdown(cancel_futures=True)
-                    raise
-
-            repos = [repo for f in done_fs for repo in f.result()]
-
-            log.info(
-                "Found %d %s in %s",
-                len(repos),
-                pl(repos, "repository"),
-                path
-            )
-
-            return repos
-
-
-@app.command("find", help="Recursively search for git repositories")
-def cmd_find(
-    path: Annotated[Path, typer.Argument(
-        envvar=SEARCH_PATH.envvar,
-        help=SEARCH_PATH.help,
-        show_default="Current working directory",
-        default_factory=Path.cwd,
-    )],
-    depth: Annotated[int, typer.Option(
-        *SEARCH_DEPTH.options,
-        envvar=SEARCH_DEPTH.envvar,
-        help=SEARCH_DEPTH.help,
-    )] = 1,
-    query_name: Annotated[Optional[str], typer.Option(
-        *QUERY_NAME.options,
-        help=QUERY_NAME.help,
-    )] = None,
-    query_remote: Annotated[Optional[str], typer.Option(
-        *QUERY_REMOTE.options,
-        help=QUERY_REMOTE.help,
-    )] = None,
-    output: Annotated[FindOutput, typer.Option(
-        *OUTPUT.options,
-        help=OUTPUT.help
-    )] = FindOutput.TABLE,
-):
-    _path = path.expanduser().resolve()
-    repos = find_repos(
-        _path,
-        depth,
-        remotes=True,
-        query_name=query_name,
-        query_remote=query_remote,
+    log.info("Searching for repositories in %s", search_path)
+    repos = filter_repos(
+        iter_repo_dirs(search_path, search_depth),
+        filter=filter if filter is not None else RepoFilter(),
+        job=job,
     )
+    return repos
 
+
+def _output_remote(repos: list[GitRepo]):
+    remote_urls_set: set[str] = set()
+    for repo in repos:
+        for remote in repo.remotes.values():
+            if remote.fetch:
+                remote_urls_set.add(remote.fetch)
+    remote_urls: list[str] = list(remote_urls_set)
+    remote_urls.sort()
+    for url in remote_urls:
+        remote = GitRemote("~", fetch=url)
+        console_out.print(remote.render(show_name=False))
+
+
+def _render_table(repos: list[GitRepo], output: FindOutput, render_root: Path) -> Table:
     repos.sort(key=lambda r: str(r.path))
-
-    if output == FindOutput.NAME:
-        for repo in repos:
-            console_out.print(repo.name)
-        return
-    
-    if output == FindOutput.PATH:
-        for repo in repos:
-            console_out.print(repo.path.relative_to(_path))
-        return
-    
-    if output == FindOutput.REMOTE:
-        for repo in repos:
-            if repo.remotes:
-                console_out.print(
-                    *[r.fetch for r in repo.remotes.values()],
-                    sep="\n"
-                )
-        return
 
     table = Table(
         box=None,
-        pad_edge=False,
-        expand=True,
-        header_style="bold underline"
+        pad_edge=True,
+        header_style="bold underline",
     )
     table.add_column("#", justify="right")
-    table.add_column("Name", style="cyan bold")
     table.add_column("Local")
     table.add_column("Remote")
 
     for i, repo in enumerate(repos):
-        local_path = path.joinpath(repo.path.relative_to(_path))
-
-        remotes: list[Text] = []
-        for remote in repo.remotes.values():
-            # Parse remote owner and repo name
-            fetch_path = remote.fetch_path
-            if not fetch_path:
-                continue
-            parts = fetch_path.rsplit("/", 1)
-
-            if len(parts) == 1:
-                remote_owner = ""
-                remote_repo_name = parts[0].removesuffix(".git")
-            else:
-                remote_owner = parts[0].removeprefix("/")
-                remote_repo_name = parts[1].removesuffix(".git")
-
-            remote_text = Text(
-                remote_owner if remote_owner else remote_repo_name
-            )
-
-            # Show name only if it is different from its local name
-            if repo.name != remote_repo_name:
-                remote_text.append(f"/{remote_repo_name}", style="yellow")
-
-            remotes.append(remote_text)
-
-        table.add_row(
-            str(i+1),
-            repo.name,
-            str(local_path),
-            Text("\n").join(remotes)
+        row_num = str(i+1)
+        repo_name = repo.render_path(
+            None if output == FindOutput.WIDER else render_root
         )
+        repo_remotes = repo.render_remotes(
+            short=output == FindOutput.NARROW
+        )
+        table.add_row(row_num, repo_name, repo_remotes)
 
-    console_out.print(table)
+    return table
+
+
+@app.command("find", help="Recursively search for git repositories in a directory")
+def cmd_find(
+    search_path: Annotated[Path, typer.Argument(
+        envvar=SEARCH_PATH.envvar,
+        default_factory=Path.cwd,
+        show_default="Current working directory",
+        help=SEARCH_PATH.help
+    )],
+    search_depth: Annotated[int, typer.Option(
+        *SEARCH_DEPTH.options,
+        envvar=SEARCH_DEPTH.envvar,
+        help=SEARCH_DEPTH.help,
+    )] = 1,
+    filter_name: Annotated[Optional[str], typer.Option(
+        *FILTER_NAME.options,
+        help=FILTER_NAME.help,
+    )] = None,
+    filter_remote: Annotated[Optional[str], typer.Option(
+        *FILTER_REMOTE.options,
+        help=FILTER_REMOTE.help,
+    )] = None,
+    filter_dirty: Annotated[Optional[bool], typer.Option(
+        *FILTER_DIRTY.options,
+        help=FILTER_DIRTY.help,
+    )] = None,
+    output: Annotated[FindOutput, typer.Option(
+        "--output",
+        "-o",
+        help="Output format"
+    )] = FindOutput.NARROW,
+):
+    try:
+        _search_path = search_path.expanduser().resolve(strict=True)
+    except FileNotFoundError:
+        raise InvalidOptsError(f"Path '{search_path}' does not exist.")
+    except NotADirectoryError:
+        raise InvalidOptsError(f"Path '{search_path}' is invalid.")
+
+    repos = find_repos(
+        _search_path,
+        search_depth,
+        filter=RepoFilter(
+            name=filter_name,
+            remote=filter_remote,
+            dirty=filter_dirty,
+        ),
+        job=RepoJob(remote=True)
+    )
+
+    if output == FindOutput.RELATIVE:
+        repos.sort(key=lambda r: str(r.path))
+        for repo in repos:
+            console_out.print(repo.render_path(_search_path))
+        return
+    
+    if output == FindOutput.ABSOLUTE:
+        repos.sort(key=lambda r: str(r.path))
+        for repo in repos:
+            console_out.print(repo.render_path())
+        return
+
+    if output == FindOutput.REMOTE:
+        _output_remote(repos)
+        return
+
+    # output is NARROW, WIDE, or WIDER
+    console_out.print(_render_table(repos, output, _search_path))

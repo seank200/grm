@@ -1,18 +1,20 @@
 import logging
 import typer
-from .context import console_out
-from .exceptions import SubprocessError
+from .exceptions import SubprocessError, CommandError
+from .context import console_out, console_err, options
 from .find import (
     find_repos,
+    RepoFilter,
+    RepoJob,
     SEARCH_PATH,
     SEARCH_DEPTH,
-    QUERY_NAME,
-    QUERY_REMOTE
+    FILTER_NAME,
+    FILTER_REMOTE,
+    FILTER_DIRTY,
 )
-from .utils import OptionDef
+from .status import render_status
 from pathlib import Path
-from rich.table import Table
-from rich.text import Text
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, MofNCompleteColumn, TimeRemainingColumn
 from typing import Annotated, Optional
 
 
@@ -20,58 +22,78 @@ app = typer.Typer()
 log = logging.getLogger(__name__)
 
 
-DETACH = OptionDef(
-    "--detach",
-    "-d",
-    help="Allow detached head state when switching",
-)
+class SwitchProgress(Progress):
+    def __init__(self):
+        super().__init__(
+            SpinnerColumn(),
+            TextColumn("{task.description}"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            TimeRemainingColumn(),
+            console=console_err,
+            transient=not options.debug,
+        )
 
 
-@app.command("switch", help="Switch repositories to a target ref")
+@app.command("switch", help="Switch repositories to target ref")
 def cmd_switch(
     refname: Annotated[str, typer.Argument(
         help="Target ref to switch to"
     )],
-    path: Annotated[Path, typer.Option(
+    search_path: Annotated[Path, typer.Option(
         *SEARCH_PATH.options,
         envvar=SEARCH_PATH.envvar,
-        help=SEARCH_PATH.help,
-        show_default="Current working directory",
         default_factory=Path.cwd,
+        show_default="Current working directory",
+        help=SEARCH_PATH.help
     )],
     detach: Annotated[bool, typer.Option(
-        *DETACH.options,
-        help=DETACH.help,
+        "--detach",
+        help="Allow detached-head state when switching",
     )] = False,
-    depth: Annotated[int, typer.Option(
+    search_depth: Annotated[int, typer.Option(
         *SEARCH_DEPTH.options,
         envvar=SEARCH_DEPTH.envvar,
         help=SEARCH_DEPTH.help,
     )] = 1,
-    query_name: Annotated[Optional[str], typer.Option(
-        *QUERY_NAME.options,
-        help=QUERY_NAME.help,
+    filter_name: Annotated[Optional[str], typer.Option(
+        *FILTER_NAME.options,
+        help=FILTER_NAME.help,
     )] = None,
-    query_remote: Annotated[Optional[str], typer.Option(
-        *QUERY_REMOTE.options,
-        help=QUERY_REMOTE.help,
+    filter_remote: Annotated[Optional[str], typer.Option(
+        *FILTER_REMOTE.options,
+        help=FILTER_REMOTE.help,
+    )] = None,
+    filter_dirty: Annotated[Optional[bool], typer.Option(
+        *FILTER_DIRTY.options,
+        help=FILTER_DIRTY.help,
     )] = None,
 ):
-    _path = path.expanduser().resolve()
+    _search_path = search_path.expanduser().resolve()
     repos = find_repos(
-        _path,
-        depth,
-        query_name=query_name,
-        query_remote=query_remote,
+        _search_path,
+        search_depth,
+        filter=RepoFilter(
+            name=filter_name,
+            remote=filter_remote,
+            dirty=filter_dirty,
+        ),
+        job=RepoJob(status=True)
     )
-    
-    for repo in repos:
-        try:
-            repo.switch(refname, detach=detach)
-        except SubprocessError:
-            log.error(
-                "Failed to switch [cyan]%s[/] to %s.",
-                repo.name,
-                refname,
-                extra={"markup": True},
-            )
+
+    with SwitchProgress() as progress:
+        task = progress.add_task("Switching repositories", total=len(repos))
+        for repo in repos:
+            status = repo.status
+            if status.not_staged + status.staged > 0:
+                log.warning("Not switching '%s'. Working tree contains changes", repo.name)
+            try:
+                repo.switch(refname, detach=detach)
+            except SubprocessError:
+                log.error("Failed to switch '%s' to '%s'.", repo.name, refname)
+            except CommandError as e:
+                log.error("Failed to switch '%s' to '%s'. %s", repo.name, refname, e)
+            finally:
+                progress.advance(task, 1)
+
+    console_out.print(render_status(repos, _search_path))

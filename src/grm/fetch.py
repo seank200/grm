@@ -1,158 +1,243 @@
 import logging
 import typer
+from .context import console_out, console_err, options
 from .exceptions import SubprocessError
 from .find import (
     find_repos,
+    RepoFilter,
+    RepoJob,
     SEARCH_PATH,
     SEARCH_DEPTH,
-    QUERY_NAME,
-    QUERY_REMOTE
+    FILTER_NAME,
+    FILTER_REMOTE,
+    FILTER_DIRTY,
 )
 from .git import GitRepo
-from .utils import OptionDef, pl
-from collections.abc import Collection
-from concurrent.futures import wait, ThreadPoolExecutor
+from .utils import pl, num_workers
+from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
-from rich.progress import Progress, TaskID, TextColumn, BarColumn, MofNCompleteColumn, TimeRemainingColumn
+from rich.progress import Progress, TaskID, SpinnerColumn, TextColumn, BarColumn, MofNCompleteColumn, TimeRemainingColumn
+from rich.table import Table
+from rich.text import Text
 from typing import Annotated, Optional
+
+
+@dataclass
+class FetchOptions:
+    remote: Optional[str] = None
+    all: bool = False
+    prune: bool = False
+    filter: Optional[RepoFilter] = None
+
+
+@dataclass
+class FetchContext:
+    progress: Progress
+    task: TaskID
+
+
+@dataclass
+class FetchResult:
+    repo: GitRepo
+    success: bool
+
+
+class FetchProgress(Progress):
+    def __init__(self):
+        super().__init__(
+            SpinnerColumn(),
+            TextColumn("{task.description}"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            TimeRemainingColumn(),
+            console=console_err,
+            transient=not options.debug,
+        )
 
 
 app = typer.Typer()
 log = logging.getLogger(__name__)
 
 
-FETCH_ALL = OptionDef(
-    "--all",
-    "-a",
-    help="Fetch all remotes"
-)
-
-FETCH_PRUNE = OptionDef(
-    "--prune",
-    "-p",
-    help="Remove remote refs that no longer exist"
-)
-
-MAX_WORKERS = OptionDef(
-    "--max-workers",
-    "-j",
-    help="Maximum number of threads to fetch repositories"
-)
-
-DEFAULT_MAX_WORKERS = 3
-
-
-@dataclass
-class FetchJob:
-    progress: Progress
-    task: TaskID
-    repo: GitRepo
-    fetch_all: bool
-    prune: bool
-
-    def advance(self, amount: float = 1):
-        self.progress.advance(self.task, amount)
-
-
-def _worker_fetch(job: FetchJob) -> bool:
+def worker_fetch(ctx: FetchContext, repo: GitRepo, opts: FetchOptions) -> FetchResult:
     try:
-        log.info("Fetching [cyan]%s[/]", job.repo.name)
-        job.repo.fetch()
-        job.advance(1)
-        return True
+        if opts.all:
+            for remote in repo.remotes.values():
+                # When fetching all remotes, only fetch matching remotes
+                if opts.filter and not opts.filter.matches_remote(remote):
+                    continue
+                    
+                repo.fetch(remote.name, prune=opts.prune)
+        else:
+            repo.fetch(opts.remote, prune=opts.prune)
+
+        # Re-check status here, while we are still multi-threaded
+        repo.status
+
+        return FetchResult(repo, True)
     except SubprocessError:
         log.error(
-            "Failed to fetch [cyan]%s[/]",
-            job.repo.name,
+            "Failed to fetch [cyan]%s[/]", repo.name, extra={"markup": True}
+        )
+        return FetchResult(repo, False)
+    finally:
+        ctx.progress.advance(ctx.task, 1)
+
+
+def _log_results(results: list[FetchResult]):
+    total = len(results)
+    success_cnt = 0
+    for result in results:
+        if result.success:
+            success_cnt += 1
+
+    error_cnt = total - success_cnt
+    if error_cnt > 0:
+        log.warning(
+            "Fetched %d %s ([green]%d[/] success, [red]%d[/] error)",
+            total,
+            pl(total, "repository"),
+            success_cnt, 
+            total - success_cnt,
             extra={"markup": True},
         )
-    return False
-
-
-def fetch(
-    repos: Collection[GitRepo],
-    fetch_all: bool,
-    prune: bool,
-    max_workers: int = DEFAULT_MAX_WORKERS,
-):
-    with Progress() as progress:
-        task = progress.add_task("Fetching repositories", total=len(repos))
-        with ThreadPoolExecutor(max_workers) as executor:
-            fs = [
-                executor.submit(
-                    _worker_fetch,
-                    FetchJob(progress, task, repo, fetch_all, prune)
-                )
-                for repo in repos
-            ]
-
-            try:
-                done_fs = wait(fs, timeout=300.0).done
-            except KeyboardInterrupt:
-                executor.shutdown(cancel_futures=True)
-
-    success_count = 0
-    for f in done_fs:
-        if f.result():
-            success_count += 1
-
-    log.info(
-        "Fetched [bold green]%d[/] %s",
-        success_count,
-        pl(success_count, "repository"),
-        extra={"markup": True},
-    )
-
-    failed_count = len(repos) - success_count
-    if failed_count:
-        log.error(
-            "Failed to fetch [bold red]%d[/] %s",
-            failed_count,
-            pl(failed_count, "repository")
+    else:
+        log.info(
+            "Fetched %d %s ([green]%d[/] success)",
+            total,
+            pl(total, "repository"),
+            success_cnt,
+            extra={"markup": True},
         )
 
 
-@app.command("fetch", help="Fetch remote repositories")
+def _render_results(
+    results: list[FetchResult],
+    render_root: Optional[Path] = None
+) -> Table:
+    table = Table(
+        title=f"Fetch {pl(results, 'result')}",
+        box=None,
+        header_style="bold underline",
+    )
+    table.add_column("#", justify="right")
+    table.add_column("Repository")
+    table.add_column("Branch")
+    table.add_column("Status")
+
+    for i, result in enumerate(results):
+        if result.success:
+            status = Text("SUCCESS", style="bold green")
+            branch = result.repo.status.render_branch()
+        else:
+            status = Text("ERROR", style="bold red")
+            branch = ""
+
+        table.add_row(
+            str(i+1),
+            result.repo.render_path(render_root),
+            branch,
+            status,
+        )
+
+    return table
+
+
+def fetch_repos(
+    repos: list[GitRepo],
+    opts: FetchOptions,
+) -> list[FetchResult]:
+    _repos = (r for r in repos if r.remotes)
+
+    with FetchProgress() as progress:
+        task = progress.add_task("Fetching repositories", total=None)
+        with ThreadPoolExecutor(max_workers=num_workers()) as executor:
+            ctx = FetchContext(progress, task)
+            fs = tuple(
+                executor.submit(worker_fetch, ctx, repo, opts)
+                for repo in _repos
+            )
+            progress.update(task, total=len(fs))
+
+            noop_cnt = len(repos) - len(fs)
+            if noop_cnt > 0:
+                log.warning(
+                    "Not fetching %d %s with no remotes",
+                    noop_cnt,
+                    pl(noop_cnt, "repository")
+                )
+
+            try:
+                done_fs = wait(fs, timeout=120.0).done
+            except KeyboardInterrupt:
+                executor.shutdown(cancel_futures=True)
+                raise
+
+    results: list[FetchResult] = [f.result() for f in done_fs]
+    _log_results(results)
+    return results
+
+
+@app.command("fetch", help="Fetch from remote repositories")
 def cmd_fetch(
-    path: Annotated[Path, typer.Argument(
+    search_path: Annotated[Path, typer.Option(
+        *SEARCH_PATH.options,
         envvar=SEARCH_PATH.envvar,
-        help=SEARCH_PATH.help,
-        show_default="Current working directory",
         default_factory=Path.cwd,
+        show_default="Current working directory",
+        help=SEARCH_PATH.help
     )],
+    remote_name: Annotated[Optional[str], typer.Argument(
+        help="Name of remote to fetch"
+    )] = None,
     fetch_all: Annotated[bool, typer.Option(
-        *FETCH_ALL.options,
-        help=FETCH_ALL.help,
+        "--all",
+        "-a",
+        help="Fetch all remotes"
     )] = False,
     prune: Annotated[bool, typer.Option(
-        *FETCH_PRUNE.options,
-        help=FETCH_PRUNE.help,
-    )] = False,
-    max_workers: Annotated[int, typer.Option(
-        *MAX_WORKERS.options,
-        help=MAX_WORKERS.help,
-    )] = DEFAULT_MAX_WORKERS,
-    depth: Annotated[int, typer.Option(
+        "--prune",
+        help="Remove refs that no longer exist in remote"
+    )] = False, 
+    search_depth: Annotated[int, typer.Option(
         *SEARCH_DEPTH.options,
         envvar=SEARCH_DEPTH.envvar,
         help=SEARCH_DEPTH.help,
     )] = 1,
-    query_name: Annotated[Optional[str], typer.Option(
-        *QUERY_NAME.options,
-        help=QUERY_NAME.help,
+    filter_name: Annotated[Optional[str], typer.Option(
+        *FILTER_NAME.options,
+        help=FILTER_NAME.help,
     )] = None,
-    query_remote: Annotated[Optional[str], typer.Option(
-        *QUERY_REMOTE.options,
-        help=QUERY_REMOTE.help,
+    filter_remote: Annotated[Optional[str], typer.Option(
+        *FILTER_REMOTE.options,
+        help=FILTER_REMOTE.help,
+    )] = None,
+    filter_dirty: Annotated[Optional[bool], typer.Option(
+        *FILTER_DIRTY.options,
+        help=FILTER_DIRTY.help,
     )] = None,
 ):
-    _path = path.expanduser().resolve()
-    repos = find_repos(
-        _path,
-        depth,
-        status=True,
-        query_name=query_name,
-        query_remote=query_remote,
+    _search_path = search_path.expanduser().resolve()
+    filter = RepoFilter(
+        name=filter_name,
+        remote=filter_remote,
+        dirty=filter_dirty,
     )
-    fetch(repos, fetch_all, prune, max_workers)
+    repos = find_repos(
+        _search_path,
+        search_depth,
+        filter=filter,
+        job=RepoJob(remote=True)
+    )
+    results = fetch_repos(
+        repos,
+        FetchOptions(
+            remote=remote_name,
+            all=fetch_all,
+            prune=prune,
+            filter=filter
+        ),
+    )
+    results.sort(key=lambda r: f"{int(not r.success)}{r.repo.path}")
+    console_out.print(_render_results(results))

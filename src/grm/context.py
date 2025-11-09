@@ -43,6 +43,7 @@ def configure(
     elif verbose:
         level = logging.INFO
         format = FORMAT_SHORT
+        kwargs["omit_repeated_times"] = False
         kwargs["log_time_format"] = TIME_FORMAT_SHORT
     else:
         level = logging.WARNING

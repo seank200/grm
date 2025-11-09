@@ -3,6 +3,7 @@ import re
 from dataclasses import dataclass
 from grm.utils import run
 from pathlib import Path
+from rich.text import Text
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -12,25 +13,29 @@ class GitRemote:
     name: str
     fetch: Optional[str] = None
     push: Optional[str] = None
-
-    _fetch_path: Optional[str] = None
-
-    @property
-    def fetch_path(self) -> Optional[str]:
-        if self.fetch is None:
-            return None
-        
-        if self._fetch_path is None:
-            self._fetch_path = urlparse(self.fetch).path
-
-        return self._fetch_path
     
-    def __str__(self):
-        return f"GitRemote(" \
-            + f"name='{self.name}', " \
-            + f"fetch='{self.fetch}', " \
-            + f"push='{self.push}'" \
-            + ")"
+    def render(self, *, short: bool = False, show_name: bool = True):
+        if not self.fetch:
+            return Text("!", style="red")
+        
+        parts = urlparse(self.fetch).path.rsplit("/", 1)
+        remote_repo = parts[-1].removesuffix(".git")
+        style = "blue" if self.name == remote_repo else "bold red"
+        text = Text()
+        if short:
+            owner = parts[0].removeprefix("/") if len(parts) > 1 else ""
+            if owner:
+                text.append(owner + "/", style="blue")
+            text.append(remote_repo, style=style)
+        else:
+            text.append(self.fetch, style="blue")
+            start = self.fetch.rfind("/")
+            end = self.fetch.rfind(".git")
+            if start >= 0 and end >= 0:
+                text.stylize(style, start+1, end)
+        if show_name:
+            text.append(f" ({self.name})")
+        return text
 
 
 PATTERN = re.compile(r"^(\S+)\s+(\S+)\s+\((\S+)\)")
@@ -71,5 +76,5 @@ def list_remotes(path: Path) -> dict[str, GitRemote]:
             log.warning("Ignoring invalid git remote output line: %s", line)
 
     log.debug("Found %d remotes of %s: %s", len(remotes), path, remotes)
-    
+
     return remotes

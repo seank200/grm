@@ -1,15 +1,16 @@
 import logging
 import re
-from .branch import GitBranch
+from .branch import GitBranch, parse_branch
 from dataclasses import dataclass
 from grm.exceptions import CommandError
 from grm.utils import run
 from pathlib import Path
+from rich.text import Text
 from typing import Optional
 
 
-NO_COMMITS = "## No commits yet "
-DETACHED = "## HEAD (no branch)"
+NO_COMMITS = "No commits yet"
+DETACHED = "HEAD (no branch)"
 UNTRACKED = "?"
 UNMODIFIED = " "
 PATTERN_AHEAD = re.compile(r"ahead (\d+)")
@@ -24,7 +25,67 @@ class GitStatus:
     staged: int
     untracked: int
 
-    def parse_branch(self) -> Optional[GitBranch]:
+    _parsed_branch: Optional[GitBranch] = None
+
+    def is_dirty(self) -> bool:
+        if self.not_staged + self.staged + self.untracked > 0:
+            return True
+
+        branch = self.parsed_branch
+        if branch:
+            if branch.ahead + branch.behind > 0:
+                return True
+
+        return False
+
+    def is_detached(self):
+        return self.branch.startswith(DETACHED)
+
+    def no_commits(self):
+        return self.branch.startswith(NO_COMMITS)
+    
+    def render_branch(self) -> Text:
+        if self.is_detached():
+            return Text("~", style="red")
+        if self.no_commits():
+            return Text("(NO COMMITS)", style="red")
+
+        branch = self.branch.replace("...", " -> ")
+        remote_start = branch.find("-> ")
+        if remote_start >= 0:
+            text = Text(branch)
+            track_start = branch.find("[", remote_start+3)
+            if track_start >= 0:
+                text.stylize("red", start=0, end=remote_start)
+                text.stylize("red", start=track_start)
+            else:
+                text.stylize("green", start=0, end=remote_start)
+        else:
+            text = Text(branch, style="green")
+
+        return text
+
+    
+    def render_changes(self) -> Text:
+        text = Text()
+        if self.staged > 0:
+            text.append(str(self.staged), style="bold green")
+            text.append(" staged")
+        if self.not_staged > 0:
+            if text:
+                text.append(", ")
+            text.append(str(self.not_staged), style="bold red")
+            text.append(" not staged")
+        if self.untracked > 0:
+            if text:
+                text.append(", ")
+            text.append(str(self.untracked), style="bold red")
+            text.append(" untracked")
+        return text
+
+
+    @property
+    def parsed_branch(self) -> Optional[GitBranch]:
         """Parse branch information from git porcelain output
 
         Args:
@@ -35,30 +96,13 @@ class GitStatus:
         - `## HEAD (no branch)`
         - `## main...origin/main [ahead 1, behind 2]`
         """
-        l = self.branch.lstrip("## ")
-
-        if l.startswith(NO_COMMITS) or l.startswith(DETACHED):
+        if self.no_commits() or self.is_detached():
             return None
         
-        i = l.find("...")
+        if self._parsed_branch is None:
+            self._parsed_branch = parse_branch("*" + self.branch)
 
-        upstream = None
-        ahead = -1
-        behind = -1
-
-        if i > 0:
-            name = l[:i]
-            upstream = l[i+3:]
-            m_ahead = re.match(PATTERN_AHEAD, l)
-            if m_ahead:
-                ahead = int(m_ahead.group(1))
-            m_behind = re.match(PATTERN_BEHIND, l)
-            if m_behind:
-                behind = int(m_behind.group(1))
-        else:
-            name = l
-
-        return GitBranch(name, upstream, ahead, behind)
+        return self._parsed_branch
 
 
 def show_status(path: Path) -> GitStatus:
@@ -90,5 +134,5 @@ def show_status(path: Path) -> GitStatus:
                 not_staged += 1
 
     status = GitStatus(branch, not_staged, staged, untracked)
-    log.debug("Checked status of %d. %s", path, status)
+    log.debug("Parsed status of '%s': %s", path.name, status)
     return status
