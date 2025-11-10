@@ -1,6 +1,6 @@
 import logging
 import os
-from ..exceptions import CommandError
+from ..exceptions import CommandError, SubprocessError
 from .branch import GitBranch, list_branches
 from .fetch import fetch
 from .merge import merge_ff
@@ -47,10 +47,25 @@ class GitRepo:
         return self._branches
     
     def switch(self, refname: str, *, detach: bool):
-        switch(self.path, refname, detach=detach)
-        log.info("Switched '%s' to '%s'", self.name, refname)
-        self._status = None
-        self._branches = None
+        status = self.status
+        if status.not_staged + status.staged > 0:
+            log.warning(
+                "Not switching '%s' to '%s'. Working tree contains changes",
+                self.name,
+                refname,
+            )
+
+        try:
+            switch(self.path, refname, detach=detach)
+            self._status = None
+            self._branches = None
+            log.info("Switched %s to '%s'", self.name, refname)
+        except SubprocessError:
+            log.error("Failed to switch %s to '%s'.", self.name, refname)
+            raise
+        except CommandError as e:
+            log.error("Failed to switch %s to '%s'. %s", self.name, refname, e)
+            raise
     
     def fetch(
         self,

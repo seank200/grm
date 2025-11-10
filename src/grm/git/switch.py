@@ -1,6 +1,6 @@
 import logging
-from grm.exceptions import InvalidOptsError
-from grm.utils import run
+from ..exceptions import InvalidOptsError
+from ..utils import run
 from pathlib import Path
 
 
@@ -17,5 +17,3 @@ def switch(path: Path, refname: str, *, detach: bool = False):
     args.append(refname)
 
     run(args, path=path)
-
-    log.debug("Switched %s to %s (detach: %s)", path, refname, detach)

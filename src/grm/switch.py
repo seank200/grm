@@ -1,6 +1,6 @@
 import logging
 import typer
-from .exceptions import SubprocessError, CommandError
+from .exceptions import CommandError
 from .context import console_out, console_err, options
 from .find import (
     find_repos,
@@ -14,7 +14,7 @@ from .find import (
 )
 from .git import GitRepo, GitBranch
 from .utils import num_workers, render_result
-from concurrent.futures import Future, ThreadPoolExecutor, wait
+from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
 from rich.progress import Progress, TaskID, SpinnerColumn, TextColumn, BarColumn, MofNCompleteColumn, TimeRemainingColumn
@@ -33,7 +33,6 @@ class SwitchResult:
     success: bool
     repo: GitRepo
     before_branch: Optional[GitBranch]
-    after_branch: Optional[GitBranch]
 
 
 app = typer.Typer()
@@ -54,27 +53,18 @@ class SwitchProgress(Progress):
 
 
 def _worker_switch(ctx: SwitchContext, repo: GitRepo, refname: str, detach: bool):
-    status = repo.status
-    if status.not_staged + status.staged > 0:
-        log.warning("Not switching '%s'. Working tree contains changes", repo.name)
-
     before_branch: Optional[GitBranch] = repo.status.parsed_branch
-    after_branch: Optional[GitBranch] = None
 
     try:
         repo.switch(refname, detach=detach)
         repo.status
         success = True
-    except SubprocessError:
-        log.error("Failed to switch '%s' to '%s'.", repo.name, refname)
-        success = False
-    except CommandError as e:
-        log.error("Failed to switch '%s' to '%s'. %s", repo.name, refname, e)
+    except CommandError:
         success = False
     finally:
         ctx.progress.advance(ctx.task, 1)
 
-    return SwitchResult(success, repo, before_branch, after_branch)
+    return SwitchResult(success, repo, before_branch)
 
 
 def switch_repos(
@@ -88,7 +78,7 @@ def switch_repos(
         task = progress.add_task("Switching repositories", total=len(repos))
         ctx = SwitchContext(progress, task)
         with ThreadPoolExecutor(max_workers=num_workers()) as executor:
-            fs: tuple[Future, ...] = tuple(
+            fs = (
                 executor.submit(_worker_switch, ctx, repo, refname, detach)
                 for repo in repos
             )
