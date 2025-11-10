@@ -75,29 +75,69 @@ def worker_sync(ctx: SyncContext, repo: GitRepo, opts: SyncOptions) -> SyncResul
         return SyncResult(repo, True)
     
     if branch.upstream is None:
-        log.warning("Not syncing '%s'. Branch '%s' has no remote-tracking branch.", repo.name, branch.name)
+        log.warning(
+            "Not syncing '%s'. Branch '%s' has no remote-tracking branch.",
+            repo.name,
+            branch.name
+        )
         return SyncResult(repo, True)
 
     if branch.ahead > 0 and branch.behind > 0:
-        log.error("Failed to sync '%s' (%s -> %s, ahead %d, behind %d). Remote has diverged from HEAD", repo.name, branch.name, branch.upstream, branch.ahead, branch.behind)
+        log.error(
+            "Failed to sync '%s' (%s -> %s, ahead %d, behind %d). " \
+                + "Remote tracking branch has diverged from local history",
+            repo.name,
+            branch.name,
+            branch.upstream,
+            branch.ahead,
+            branch.behind
+        )
         return SyncResult(repo, True, False, False)
-    if branch.ahead > 0:
+
+    if branch.ahead > 0 and opts.push:
         try:
             repo.push()
             return SyncResult(repo, True, None, True)
         except SubprocessError:
-            log.error("Failed to push '%s' (%s -> %s, ahead %d)", repo.name, branch.name, branch.upstream, branch.ahead)
-        except CommandError as e:
-            log.error("Failed to push '%s' (%s -> %s, ahead %d). %s", repo.name, branch.name, branch.upstream, branch.ahead, e)
+            log.error(
+                "Failed to push '%s' (%s -> %s, ahead %d)",
+                repo.name,
+                branch.name,
+                branch.upstream,
+                branch.ahead
+            )
+        except CommandError as error:
+            log.error(
+                "Failed to push '%s' (%s -> %s, ahead %d). %s",
+                repo.name,
+                branch.name,
+                branch.upstream,
+                branch.ahead,
+                error
+            )
         return SyncResult(repo, True, None, False)
-    elif branch.behind > 0:
+
+    if branch.behind > 0:
         try:
             repo.merge_ff(branch.upstream)
             return SyncResult(repo, True, True, None)
         except SubprocessError:
-            log.error("Failed to pull '%s' (%s <- %s, behind %d)", repo.name, branch.name, branch.upstream, branch.behind)
-        except CommandError as e:
-            log.error("Failed to pull '%s' (%s <- %s, behind %d). %s", repo.name, branch.name, branch.upstream, branch.behind)
+            log.error(
+                "Failed to pull '%s' (%s <- %s, behind %d)",
+                repo.name,
+                branch.name,
+                branch.upstream,
+                branch.behind
+            )
+        except CommandError as error:
+            log.error(
+                "Failed to pull '%s' (%s <- %s, behind %d). %s",
+                repo.name,
+                branch.name,
+                branch.upstream,
+                branch.behind,
+                error
+            )
         return SyncResult(repo, True, False, None)
     
     return SyncResult(repo, True)
