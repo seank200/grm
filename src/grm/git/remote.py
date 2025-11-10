@@ -14,13 +14,22 @@ class GitRemote:
     fetch: Optional[str] = None
     push: Optional[str] = None
     
-    def render(self, *, short: bool = False, show_name: bool = True):
+    def render(
+        self,
+        *,
+        short: bool = False,
+        show_name: bool = True,
+        local_name: Optional[str] = None,
+    ):
         if not self.fetch:
             return Text("!", style="red")
         
         parts = urlparse(self.fetch).path.rsplit("/", 1)
         remote_repo = parts[-1].removesuffix(".git")
-        style = "blue" if self.name == remote_repo else "bold red"
+        if local_name:
+            style = "blue" if local_name == remote_repo else "bold red"
+        else:
+            style = "blue"
         text = Text()
         if short:
             owner = parts[0].removeprefix("/") if len(parts) > 1 else ""
