@@ -74,8 +74,8 @@ def run(
             ))
         return proc
     except subprocess.CalledProcessError as cpe:
-        e = SubprocessError(cpe, path=path)
-        log.warning("Sub-process failed. %s", e)
+        e = SubprocessError(cpe, "Sub-process failed.", path=path)
+        log.debug("Sub-process failed. %s", e)
         raise e
     
 

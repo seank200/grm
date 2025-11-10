@@ -59,7 +59,8 @@ def _worker_switch(ctx: SwitchContext, repo: GitRepo, refname: str, detach: bool
         repo.switch(refname, detach=detach)
         repo.status
         success = True
-    except CommandError:
+    except CommandError as e:
+        log.error("%s", e)
         success = False
     finally:
         ctx.progress.advance(ctx.task, 1)

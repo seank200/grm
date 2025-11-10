@@ -53,9 +53,15 @@ class RepoFilter:
                 in (repo.name if self.case_sensitive 
                     else repo.name.lower())
     
-    def matches_remote(self, remote: GitRemote):
-        return self.remote and remote.fetch and self.remote \
-            in (remote.fetch if self.case_sensitive else remote.fetch.lower())
+    def matches_remote(self, remote: GitRemote) -> bool:
+        if self.remote is None:
+            return True
+
+        remote_url = remote.fetch if remote.fetch else ""
+        if self.case_sensitive:
+            remote_url = remote_url.lower()
+
+        return self.remote in remote_url
 
     def matches_remotes(self, repo: GitRepo) -> bool:
         if self.remote is None:

@@ -1,6 +1,6 @@
 import logging
 import os
-from ..exceptions import CommandError, SubprocessError
+from ..exceptions import CommandError, InvalidOptsError
 from .branch import GitBranch, list_branches
 from .fetch import fetch
 from .merge import merge_ff
@@ -49,23 +49,15 @@ class GitRepo:
     def switch(self, refname: str, *, detach: bool):
         status = self.status
         if status.not_staged + status.staged > 0:
-            log.warning(
-                "Not switching '%s' to '%s'. Working tree contains changes",
-                self.name,
-                refname,
+            raise CommandError(
+                "Cannot switch {} to '{}'. Working tree contains changes" \
+                    .format(self.name, refname)
             )
 
-        try:
-            switch(self.path, refname, detach=detach)
-            self._status = None
-            self._branches = None
-            log.info("Switched %s to '%s'", self.name, refname)
-        except SubprocessError:
-            log.error("Failed to switch %s to '%s'.", self.name, refname)
-            raise
-        except CommandError as e:
-            log.error("Failed to switch %s to '%s'. %s", self.name, refname, e)
-            raise
+        switch(self.path, refname, detach=detach)
+        self._status = None
+        self._branches = None
+        log.info("Switched %s to '%s'", self.name, refname)
     
     def fetch(
         self,
@@ -74,57 +66,56 @@ class GitRepo:
         all: bool = False,
         prune: bool = False
     ):
-        log.info(
-            "Fetching %s (%s)",
-            self.name,
-            remote if remote else "all" if all else "~"
-        )
-        fetch(
-            self.path,
-            remote,
-            all=all,
-            prune=prune
-        )
+        f_remote = remote if remote else "all" if all else "~"
+        log.info("Fetching %s (%s)", self.name, f_remote)
+        fetch(self.path, remote, all=all, prune=prune)
         self._status = None
         self._branches = None
-        log.debug(
-            "Fetched %s (%s)",
-            self.name,
-            remote if remote else "all" if all else "~"
-        )
+        log.debug("Fetched %s (%s)", self.name, f_remote)
+
+    def current_branch(self) -> GitBranch:
+        branch = self.status.parsed_branch
+        if branch is None:
+            if self.status.is_detached():
+                cause = "HEAD is detached."
+            elif self.status.no_commits():
+                cause = "No commits on current branch."
+            else:
+                cause = "Invalid status"
+            raise CommandError(cause)
+        return branch
 
     def merge_ff(self, commit: str):
         if not commit:
-            raise ValueError("Merge target commit is required")
+            raise InvalidOptsError("Merge target commit is required")
 
-        branch = self.status.parsed_branch
-        if branch is None:
-            if self.status.is_detached():
-                cause = "HEAD is detached."
-            elif self.status.no_commits():
-                cause = "No commits on current branch."
-            else:
-                cause = "Status is invalid."
-            raise CommandError(cause)
-        if branch.upstream is None:
-            raise CommandError(f"Branch '{branch.name}' has no remote-tracking branch.")
-        
-        log.info("Fast-forwarding '%s' (%s <- %s)", self.name, branch.name, branch.upstream)
+        branch = self.current_branch()
+
+        if branch.ahead > 0 and branch.behind > 0:
+            raise CommandError(
+                "Cannot fast-forward due to diverged history. (ahead {}, behind {})" \
+                    .format(self.name, branch.ahead, branch.behind)
+            )
+
+        log.info(
+            "Merging %s: %s <- %s (behind %d, fast-forward)",
+            self.name,
+            branch.name,
+            branch.upstream,
+            branch.behind
+        )
         merge_ff(self.path, commit)
         self._status = None
         self._branches = None
-        log.debug("Fast-forwarded '%s' (%s <- %s)", self.name, branch.name, branch.upstream)
+        log.debug(
+            "Merged %s: %s <- %s (fast-forward)",
+            self.name,
+            branch.name,
+            branch.upstream
+        )
 
     def push(self):
-        branch = self.status.parsed_branch
-        if branch is None:
-            if self.status.is_detached():
-                cause = "HEAD is detached."
-            elif self.status.no_commits():
-                cause = "No commits on current branch."
-            else:
-                cause = ""
-            raise CommandError(cause)
+        branch = self.current_branch()
         if branch.upstream is None:
             raise CommandError(f"Branch '{branch.name}' has no remote-tracking branch.")
 

@@ -1,9 +1,8 @@
 import logging
-import time
 import typer
 from .context import console_out, console_err, options
-from .exceptions import SubprocessError, CommandError
-from .fetch import worker_fetch, FetchContext, FetchOptions, FetchResult
+from .exceptions import CommandError
+from .fetch import worker_fetch, FetchContext, FetchJob, FetchResult
 from .find import (
     find_repos,
     RepoFilter,
@@ -30,7 +29,7 @@ class SyncContext(FetchContext):
 
 
 @dataclass
-class SyncOptions(FetchOptions):
+class SyncOptions(FetchJob):
     push: bool = False
 
 
@@ -58,25 +57,18 @@ log = logging.getLogger(__name__)
 
 
 def worker_sync(ctx: SyncContext, repo: GitRepo, opts: SyncOptions) -> SyncResult:
-    fetch_result = worker_fetch(ctx, repo, opts)
+    fetch_result = worker_fetch(ctx, opts)
 
     if not fetch_result.success:
         return SyncResult(repo, False)
     
     branch = repo.status.parsed_branch
     if branch is None:
-        if repo.status.is_detached():
-            cause = "HEAD is detached"
-        elif repo.status.no_commits():
-            cause = "No commits yet"
-        else:
-            cause = ""
-        log.warning("Not syncing '%s'. %s", repo.name, cause)
         return SyncResult(repo, True)
     
     if branch.upstream is None:
         log.warning(
-            "Not syncing '%s'. Branch '%s' has no remote-tracking branch.",
+            "Not syncing %s. Branch '%s' has no remote-tracking branch.",
             repo.name,
             branch.name
         )
@@ -97,71 +89,57 @@ def worker_sync(ctx: SyncContext, repo: GitRepo, opts: SyncOptions) -> SyncResul
     if branch.ahead > 0 and opts.push:
         try:
             repo.push()
-            return SyncResult(repo, True, None, True)
-        except SubprocessError:
+            push_success = True
+        except CommandError as err:
             log.error(
-                "Failed to push '%s' (%s -> %s, ahead %d)",
+                "Failed to push %s (%s -> %s). %s",
                 repo.name,
                 branch.name,
                 branch.upstream,
-                branch.ahead
+                err,
             )
-        except CommandError as error:
-            log.error(
-                "Failed to push '%s' (%s -> %s, ahead %d). %s",
-                repo.name,
-                branch.name,
-                branch.upstream,
-                branch.ahead,
-                error
-            )
-        return SyncResult(repo, True, None, False)
+            push_success = False
+        return SyncResult(repo, True, None, push_success)
 
     if branch.behind > 0:
         try:
             repo.merge_ff(branch.upstream)
-            return SyncResult(repo, True, True, None)
-        except SubprocessError:
+            merge_success = True
+        except CommandError as err:
             log.error(
-                "Failed to pull '%s' (%s <- %s, behind %d)",
+                "Failed to merge %s (%s -> %s). %s",
                 repo.name,
                 branch.name,
                 branch.upstream,
-                branch.behind
+                err,
             )
-        except CommandError as error:
-            log.error(
-                "Failed to pull '%s' (%s <- %s, behind %d). %s",
-                repo.name,
-                branch.name,
-                branch.upstream,
-                branch.behind,
-                error
-            )
-        return SyncResult(repo, True, False, None)
+            merge_success = False
+        return SyncResult(repo, True, merge_success, None)
     
     return SyncResult(repo, True)
 
 
-def sync_repos(repos: list[GitRepo], opts: SyncOptions) -> list[SyncResult]:
+def sync_repos(
+    repos: list[GitRepo],
+    *,
+    sync_all: bool = False,
+    push: bool = False,
+) -> list[SyncResult]:
     _repos = (r for r in repos if r.remotes)
     with SyncProgress() as progress:
         task = progress.add_task("Syncing repositories", total=None)
         with ThreadPoolExecutor(max_workers=num_workers()) as executor:
-            ctx = SyncContext(progress, task)
+            ctx = SyncContext(executor, progress, task)
             fs = tuple(
-                executor.submit(worker_sync, ctx, repo, opts)
+                executor.submit(
+                    worker_sync,
+                    ctx,
+                    repo,
+                    SyncOptions(repo, all=sync_all, push=push)
+                )
                 for repo in _repos
             )
             progress.update(task, total=len(fs))
-
-            noop_cnt = len(repos) - len(fs)
-            if noop_cnt > 0:
-                log.warning(
-                    "Not fetching %d %s with no remotes",
-                    noop_cnt,
-                    pl(noop_cnt, "repository")
-                )
 
             try:
                 done_fs = wait(fs, timeout=120.0).done
@@ -171,6 +149,32 @@ def sync_repos(repos: list[GitRepo], opts: SyncOptions) -> list[SyncResult]:
 
     return [f.result() for f in done_fs]
 
+
+def render_sync_results(results: list[SyncResult], render_root: Path):
+    table = Table(
+        title=f"Sync {pl(results, 'result')}",
+        box=None,
+        pad_edge=True,
+        header_style="bold underline",
+    )
+    table.add_column("#", justify="right")
+    table.add_column("Repository")
+    table.add_column("Fetch")
+    table.add_column("Merge")
+    table.add_column("Push")
+    table.add_column("Branch")
+
+    for i, r in enumerate(results):
+        table.add_row(
+            str(i+1),
+            r.repo.render_path(render_root),
+            render_result(r.success),
+            render_result(r.merge_succes),
+            render_result(r.push_success),
+            r.repo.status.render_branch(),
+        )
+
+    return table
 
 
 @app.command("sync", help="Push to and pull from remote repositories")
@@ -209,42 +213,16 @@ def cmd_sync(
     )] = None,
 ):
     _search_path = search_path.expanduser().resolve()
-    filter = RepoFilter(
-        name=filter_name,
-        remote=filter_remote,
-        dirty=filter_dirty,
-    )
     repos = find_repos(
         _search_path,
         search_depth,
-        filter=filter,
+        filter=RepoFilter(
+            name=filter_name,
+            remote=filter_remote,
+            dirty=filter_dirty,
+        ),
         job=RepoJob(remote=True)
     )
-    results = sync_repos(repos, SyncOptions(all=sync_all, push=push, filter=filter))
-
+    results = sync_repos(repos, sync_all=sync_all, push=push)
     results.sort(key=lambda r: str(r.repo.path))
-
-    table = Table(
-        title=f"Sync {pl(results, 'result')}",
-        box=None,
-        pad_edge=True,
-        header_style="bold underline",
-    )
-    table.add_column("#", justify="right")
-    table.add_column("Repository")
-    table.add_column("Fetch")
-    table.add_column("Merge")
-    table.add_column("Push")
-    table.add_column("Branch")
-
-    for i, r in enumerate(results):
-        table.add_row(
-            str(i+1),
-            r.repo.render_path(_search_path),
-            render_result(r.success),
-            render_result(r.merge_succes),
-            render_result(r.push_success),
-            r.repo.status.render_branch(),
-        )
-
-    console_out.print(table)
+    console_out.print(render_sync_results(results, _search_path))
