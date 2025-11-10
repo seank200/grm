@@ -12,10 +12,28 @@ from .find import (
     FILTER_REMOTE,
     FILTER_DIRTY,
 )
-from .status import render_status
+from .git import GitRepo, GitBranch
+from .utils import num_workers, render_result
+from concurrent.futures import Future, ThreadPoolExecutor, wait
+from dataclasses import dataclass
 from pathlib import Path
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, MofNCompleteColumn, TimeRemainingColumn
+from rich.progress import Progress, TaskID, SpinnerColumn, TextColumn, BarColumn, MofNCompleteColumn, TimeRemainingColumn
+from rich.table import Table
 from typing import Annotated, Optional
+
+
+@dataclass
+class SwitchContext:
+    progress: Progress
+    task: TaskID
+
+
+@dataclass
+class SwitchResult:
+    success: bool
+    repo: GitRepo
+    before_branch: Optional[GitBranch]
+    after_branch: Optional[GitBranch]
 
 
 app = typer.Typer()
@@ -33,6 +51,81 @@ class SwitchProgress(Progress):
             console=console_err,
             transient=not options.debug,
         )
+
+
+def _worker_switch(ctx: SwitchContext, repo: GitRepo, refname: str, detach: bool):
+    status = repo.status
+    if status.not_staged + status.staged > 0:
+        log.warning("Not switching '%s'. Working tree contains changes", repo.name)
+
+    before_branch: Optional[GitBranch] = repo.status.parsed_branch
+    after_branch: Optional[GitBranch] = None
+
+    try:
+        repo.switch(refname, detach=detach)
+        repo.status
+        success = True
+    except SubprocessError:
+        log.error("Failed to switch '%s' to '%s'.", repo.name, refname)
+        success = False
+    except CommandError as e:
+        log.error("Failed to switch '%s' to '%s'. %s", repo.name, refname, e)
+        success = False
+    finally:
+        ctx.progress.advance(ctx.task, 1)
+
+    return SwitchResult(success, repo, before_branch, after_branch)
+
+
+def switch_repos(
+    repos: list[GitRepo],
+    refname: str,
+    *,
+    detach: bool = False,
+) -> list[SwitchResult]:
+
+    with SwitchProgress() as progress:
+        task = progress.add_task("Switching repositories", total=len(repos))
+        ctx = SwitchContext(progress, task)
+        with ThreadPoolExecutor(max_workers=num_workers()) as executor:
+            fs: tuple[Future, ...] = tuple(
+                executor.submit(_worker_switch, ctx, repo, refname, detach)
+                for repo in repos
+            )
+
+            try:
+                done_fs = wait(fs, timeout=60.0).done
+            except KeyboardInterrupt:
+                executor.shutdown(cancel_futures=True)
+                raise
+
+            return [f.result() for f in done_fs]
+
+
+def render_switch(results: list[SwitchResult], render_root: Path) -> Table:
+    table = Table(
+        title="Repository Status",
+        box=None,
+        pad_edge=True,
+        header_style="bold underline",
+    )
+
+    table.add_column("#", justify="right")
+    table.add_column("Repository")
+    table.add_column("Switch")
+    table.add_column("Before")
+    table.add_column("After")
+
+    for i, result in enumerate(results):
+        table.add_row(
+            str(i+1),
+            result.repo.render_path(render_root),
+            render_result(result.success),
+            result.before_branch.name if result.before_branch else "(HEAD)",
+            result.repo.status.render_branch(),
+        )
+
+    return table
 
 
 @app.command("switch", help="Switch repositories to target ref")
@@ -81,19 +174,7 @@ def cmd_switch(
         job=RepoJob(status=True)
     )
 
-    with SwitchProgress() as progress:
-        task = progress.add_task("Switching repositories", total=len(repos))
-        for repo in repos:
-            status = repo.status
-            if status.not_staged + status.staged > 0:
-                log.warning("Not switching '%s'. Working tree contains changes", repo.name)
-            try:
-                repo.switch(refname, detach=detach)
-            except SubprocessError:
-                log.error("Failed to switch '%s' to '%s'.", repo.name, refname)
-            except CommandError as e:
-                log.error("Failed to switch '%s' to '%s'. %s", repo.name, refname, e)
-            finally:
-                progress.advance(task, 1)
+    results = switch_repos(repos, refname, detach=detach)
+    results.sort(key=lambda r: str(r.repo.path))
 
-    console_out.print(render_status(repos, _search_path))
+    console_out.print(render_switch(results, _search_path))
