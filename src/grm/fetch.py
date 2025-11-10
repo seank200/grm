@@ -123,8 +123,8 @@ def _render_results(
     )
     table.add_column("#", justify="right")
     table.add_column("Repository")
+    table.add_column("Fetch")
     table.add_column("Branch")
-    table.add_column("Status")
 
     for i, result in enumerate(results):
         if result.success:
@@ -137,8 +137,8 @@ def _render_results(
         table.add_row(
             str(i+1),
             result.repo.render_path(render_root),
-            branch,
             status,
+            branch,
         )
 
     return table
@@ -240,4 +240,4 @@ def cmd_fetch(
         ),
     )
     results.sort(key=lambda r: f"{int(not r.success)}{r.repo.path}")
-    console_out.print(_render_results(results))
+    console_out.print(_render_results(results, _search_path))
