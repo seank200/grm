@@ -28,7 +28,7 @@ class SubprocessError(CommandError):
         s = ""
         if path is not None:
             if path.is_relative_to(HOME):
-                s += f"'{path.relative_to(HOME)}' "
+                s += f"'{Path("~") / path.relative_to(HOME)}' "
             else:
                 s += f"'{path}' "
         s += f"({returncode}) "
