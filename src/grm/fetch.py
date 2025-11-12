@@ -148,20 +148,24 @@ def _render_results(
     table.add_column("Repository")
     table.add_column("Fetch")
     table.add_column("Branch")
+    table.add_column("HEAD")
 
     for i, result in enumerate(results):
         if result.success:
-            status = Text("SUCCESS", style="bold green")
+            status = Text("Success", style="bold green")
             branch = result.repo.status.render_branch()
+            head = result.repo.render_head()
         else:
-            status = Text("ERROR", style="bold red")
+            status = Text("Error", style="bold red")
             branch = ""
+            head = ""
 
         table.add_row(
             str(i+1),
             result.repo.render_path(render_root),
             status,
             branch,
+            head,
         )
 
     return table

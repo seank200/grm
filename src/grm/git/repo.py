@@ -3,6 +3,7 @@ import os
 from ..exceptions import CommandError, InvalidOptsError
 from .branch import GitBranch, list_branches
 from .fetch import fetch
+from .log import git_log, COMPACT
 from .merge import merge_ff
 from .push import push
 from .remote import GitRemote, list_remotes
@@ -50,7 +51,7 @@ class GitRepo:
         status = self.status
         if status.not_staged + status.staged > 0:
             raise CommandError(
-                "Cannot switch {} to '{}'. Working tree contains changes" \
+                "Cannot switch {} to '{}'. Working tree contains changes"
                     .format(self.name, refname)
             )
 
@@ -125,6 +126,9 @@ class GitRepo:
         self._branches = None
         log.debug("Pushed %s (%s -> %s)", self.name, branch.name, branch.upstream)
 
+    def log(self, format: str = "", max_count: int = -1) -> list[str]:
+        return git_log(self.path, format, max_count)
+
     def render_name(self) -> Text:
         return Text(self.name, style="bold cyan")
 
@@ -152,3 +156,9 @@ class GitRepo:
                 text.append(sep)
             text.append(remote.render(short=short, show_name=show_name))
         return text
+
+    def render_head(self) -> str:
+        logs = self.log(COMPACT)
+        if logs:
+            return logs[0]
+        return ""

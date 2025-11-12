@@ -159,19 +159,17 @@ def render_sync_results(results: list[SyncResult], render_root: Path):
     )
     table.add_column("#", justify="right")
     table.add_column("Repository")
-    table.add_column("Fetch")
-    table.add_column("Merge")
-    table.add_column("Push")
+    table.add_column("Result")
     table.add_column("Branch")
+    table.add_column("HEAD")
 
     for i, r in enumerate(results):
         table.add_row(
             str(i+1),
             r.repo.render_path(render_root),
-            render_result(r.success),
-            render_result(r.merge_succes),
-            render_result(r.push_success),
+            render_result(r.success and r.merge_succes and r.push_success),
             r.repo.status.render_branch(),
+            r.repo.render_head(),
         )
 
     return table
