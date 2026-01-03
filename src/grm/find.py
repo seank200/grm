@@ -1,6 +1,7 @@
 import logging
 import os
 import queue
+import sys
 import threading
 import typer
 from concurrent.futures import ThreadPoolExecutor, wait
@@ -76,13 +77,15 @@ def _find_task(task: FindTask, ctx: FindContext):
 def _find_worker(ctx: FindContext):
     task_count = 0
     tid = threading.get_native_id()
+
+    try:
+        task = ctx.tasks.get(timeout=0.05)
+    except queue.Empty:
+        log.debug("Thread %d terminated (no tasks available)")
+        return
+
     while True:
         if ctx.aborted:
-            break
-
-        try:
-            task = ctx.tasks.get_nowait()
-        except queue.Empty:
             break
 
         try:
@@ -98,7 +101,12 @@ def _find_worker(ctx: FindContext):
             task_count += 1
             ctx.tasks.task_done()
 
-    log.debug("Thread %d complete (%d tasks)", tid, task_count)
+        try:
+            task = ctx.tasks.get_nowait()
+        except queue.Empty:
+            break
+
+    log.debug("Thread %d terminating (%d tasks)", tid, task_count)
 
 
 def find(options: FindOptions) -> list[GitRepo]:
@@ -162,10 +170,14 @@ def cmd_find(
     sort: Annotated[bool, typer.Option(
         help="Sort search results by path name",
     )] = True,
-    output: Annotated[FindOutput, typer.Option(
-        "-o", "--output",
-        help="Output format",
-    )] = FindOutput.RELATIVE,
+    absolute: Annotated[Optional[bool], typer.Option(
+        "-a", "--absolute",
+        help="Output absolute paths",
+    )] = None,
+    verbose: Annotated[bool, typer.Option(
+        "-v", "--verbose",
+        help="Output detailed repository information",
+    )] = False,
 ):
     resolved_path = search_path.resolve()
 
@@ -184,26 +196,27 @@ def cmd_find(
     if sort:
         log.debug("Sorting %d results...", len(repos))
         repos.sort(key=lambda r: str(r.path))
+
+    if absolute is None:
+        absolute = not sys.stdout.isatty()
     
-    if output == FindOutput.RELATIVE:
-        for repo in repos:
-            print(repo.path.relative_to(resolved_path))
+    if not verbose:
+        for r in repos:
+            print(r.path if absolute else r.path.relative_to(resolved_path))
         return
 
-    if output == FindOutput.ABSOLUTE:
-        for repo in repos:
-            print(repo.path)
-        return
-    
-    table = Table(pad_edge=False, box=box.SIMPLE)
+    table = Table(pad_edge=False, box=None, header_style="bold underline dim")
     table.add_column("#", justify="right")
     table.add_column("Path")
     table.add_column("Remote")
 
     GitRepo.run(repos, remotes=True)
 
-    for i, repo in enumerate(repos):
-        remotes = Text("\n").join((remote.__rich__() for remote in repo.remotes()))
-        table.add_row(str(i+1), str(repo.path.relative_to(resolved_path)), remotes)
+    for i, r in enumerate(repos):
+        table.add_row(
+            str(i+1),
+            str(r.path if absolute else r.path.relative_to(resolved_path)),
+            Text("\n").join((remote.__rich__() for remote in r.remotes())),
+        )
 
     console.print(table)
