@@ -17,7 +17,7 @@ dependencies = [
 ]
 
 [project.scripts]
-grm = "grm.cli:main"
+grm = "grm.__main__:main"
 
 [tool.poetry]
 packages = [{include = "grm", from = "src"}]
