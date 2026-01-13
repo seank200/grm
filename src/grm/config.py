@@ -8,6 +8,7 @@ from rich.console import Console
 from rich.logging import RichHandler
 from rich.table import Table
 from typing import Annotated, Optional
+from .exceptions import InvalidOptionsError
 
 
 app = typer.Typer()
@@ -20,9 +21,9 @@ class AppConfig:
     find_depth: int
 
     query_name: Optional[str]
+    query_remote_name: Optional[str]
     query_remote_url: Optional[str]
     query_clean: Optional[bool]
-
     matcher_case_sensitive: bool
     matcher_exact: bool
 
@@ -62,6 +63,9 @@ def configure(
     find_path: Annotated[Path, typer.Option(
         "-p", "--path",
         envvar="GRM_PATH",
+        exists=True,
+        file_okay=False,
+        dir_okay=True,
         default_factory=Path.cwd,
         show_default="Current directory",
         help="Repository search root path",
@@ -117,6 +121,7 @@ def configure(
         find_path=find_path.expanduser(),
         find_depth=find_depth,
         query_name=query_name,
+        query_remote_name=query_remote_name,
         query_remote_url=query_remote_url,
         query_clean=query_clean,
         matcher_case_sensitive=matcher_case_sensitive,

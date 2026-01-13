@@ -1,6 +1,7 @@
 import logging
 import typer
-from grm.config import configure, get_config, app as config_app
+from .config import configure, get_config, app as config_app
+from .exceptions import GrmError
 
 
 app = typer.Typer(callback=configure)
@@ -15,7 +16,9 @@ def main():
         return 0
     except KeyboardInterrupt:
         print()
-        log.warning("Command aborted by user")
+    except GrmError as e:
+        log.critical("Command failed: %s", e)
+        return e.exit_code
     except Exception as e:
         log.critical("Command error: %s", e, exc_info=True)
     return 1

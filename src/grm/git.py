@@ -4,10 +4,10 @@ import re
 import subprocess
 from collections.abc import Sequence
 from dataclasses import dataclass
-from grm.config import get_config
 from pathlib import Path
 from rich.text import Text
 from typing import Optional, Union
+from .config import get_config
 
 
 type StrOrBytesPath = Union[str, bytes, os.PathLike[str], os.PathLike[bytes], Sequence[Union[str, bytes, os.PathLike[str], os.PathLike[bytes]]]]
@@ -103,11 +103,74 @@ class GitRepo:
         if repository:
             args.append(repository)
 
-        return self.run(args)
+        # Prepare logging
+        if repository:
+            l_repository = repository
+        elif all:
+            l_repository = "all remotes"
+        else:
+            l_repository = "remote"
+
+        try:
+            proc = self.run(args)
+        except subprocess.CalledProcessError as e:
+            log.error("Failed to fetch %s of '%s'.\n%s", l_repository, self.path, e.stderr)
+            raise
+
+        self._status = None
+
+        if log.isEnabledFor(logging.DEBUG):
+            stdout = ("\n" + proc.stdout) \
+                if (proc.stdout and proc.stdout.rstrip("\n")) else ""
+            stderr = ("\n" + proc.stderr) \
+                if (proc.stderr and proc.stderr.rstrip("\n")) else ""
+        else:
+            stdout = ""
+            stderr = ""
+
+        log.info("Fetched %s of '%s'. %s %s", l_repository, self.path, stdout, stderr)
+
     
-    def merge_ff(self):
-        # TODO
-        pass
+    def ff_upstream(self):
+        """Fast-forward merge remote-tracking branch"""
+
+        if not self.is_clean():
+            raise RuntimeError("Cannot fast-forward '{}'. Working tree is not clean.".format(self.path))
+        
+        status = self.status()
+        branch = status.head.branch
+        
+        if branch is None:
+            raise RuntimeError("Cannot fast-forward '{}'. HEAD is detached.".format(self.path))
+
+        if branch.upstream is None:
+            raise RuntimeError("Branch '{}' of '{}' has no remote-tracking branch.".format(branch.name, self.path))
+        
+        try:
+            proc = self.run(["git", "merge", "--ff-only", branch.upstream])
+        except subprocess.CalledProcessError as e:
+            log.error("Failed to fast-forward '%s' into '%s' of '%s'.\n%s",
+                      branch.upstream, branch.name, self.path, e.stderr)
+            raise
+
+        self._status = None
+
+        if log.isEnabledFor(logging.DEBUG):
+            stdout = ("\n" + proc.stdout) \
+                if (proc.stdout and proc.stdout.rstrip("\n")) else ""
+            stderr = ("\n" + proc.stderr) \
+                if (proc.stderr and proc.stderr.rstrip("\n")) else ""
+        else:
+            stdout = ""
+            stderr = ""
+
+        log.info("Fast-forwarded '%s' into '%s' of '%s'. %s %s",
+                 branch.upstream, branch.name, self.path, stdout, stderr)
+
+
+    def is_clean(self) -> bool:
+        status = self.status()
+        return status.tracked + status.unmerged == 0
     
     def get_remotes(self) -> dict[str, GitRemote]:
         if self._remotes is None:
@@ -171,7 +234,8 @@ class GitRepo:
 
                 elif line.startswith("# branch.head "):
                     branch_name = line[len("# branch.head "):]
-                    head.branch = GitBranch(branch_name)
+                    if branch_name != NO_BRANCH:
+                        head.branch = GitBranch(branch_name)
 
                 elif line.startswith("# branch.upstream "):
                     if head.branch is not None:
