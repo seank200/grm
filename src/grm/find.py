@@ -5,11 +5,21 @@ import threading
 import typer
 from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
+from rich import print as rich_print
+from rich.text import Text
+from rich.table import Table
 from typing import Annotated, Optional
+from .config import get_config
 from .exceptions import GrmError
 from .git import GitRepo
+from .render import Renderer
 from .utils import max_threads
+
+
+class FindOutput(Enum):
+    NAME = "name"
 
 
 @dataclass
@@ -33,8 +43,8 @@ class FindOptions:
     matcher: 'Matcher'
 
 
-FIND_TIMEOUT = 300.0
-WORKER_TIMEOUT = 60.0
+CLEANUP_TIMEOUT = 10.0
+WORKER_TIMEOUT = 5.0
 
 app = typer.Typer()
 log = logging.getLogger(__name__)
@@ -131,7 +141,7 @@ def _do_job(options: FindOptions, state: FindState, job: FindJob):
 
         return True
 
-    elif job.depth < options.max_depth:
+    elif options.max_depth <= 0 or job.depth < options.max_depth:
         with os.scandir(job.path) as it:
             for entry in it:
                 if state.aborted:
@@ -162,10 +172,12 @@ def _find_worker(options: FindOptions, state: FindState):
         if job is None:
             log.debug("Worker %d terminating (signal from main thread)",
                       worker_id)
+            state.jobs.task_done()
             break
 
         if state.aborted:
             log.debug("Worker %d aborting job: %s", worker_id, job)
+            state.jobs.task_done()
             break
 
         found = False
@@ -186,6 +198,7 @@ def _find_worker(options: FindOptions, state: FindState):
         except OSError as e:
             log.error("ERROR: Failed to search '%s'. %s", e)
         finally:
+            job_count += 1
             state.jobs.task_done()
 
         if found:
@@ -201,7 +214,7 @@ def _find_worker(options: FindOptions, state: FindState):
 
 def find_repos(
     path: Path,
-    max_depth: int = 1,
+    max_depth: int,
     matcher: Optional[Matcher] = None,
 ) -> list[GitRepo]:
     results: list[GitRepo] = []
@@ -213,23 +226,35 @@ def find_repos(
         lock=threading.Lock(),
     )
     found_count = 0
+    state.jobs.put(FindJob(path, 0))
 
-    num_threads = max_threads(8 if options.matcher.requires_git() else 4)
-    log.info("Searching for repositories in %s (using %d threads)",
-             path.absolute(), num_threads)
+    num_threads = max_threads(6 if options.matcher.requires_git() else 4)
+    log.debug("Searching for repositories in %s", path.absolute())
 
     with ThreadPoolExecutor(max_workers=num_threads) as executor:
-        fs = (executor.submit(_find_worker, options, state)
+        fs = tuple(executor.submit(_find_worker, options, state)
               for _ in range(num_threads))
         
         try:
-            done_fs = wait(fs, timeout=FIND_TIMEOUT).done
+            state.jobs.join()     # Wait for all jobs to complete
         except KeyboardInterrupt:
             state.aborted = True
-            for f in fs:
-                f.cancel()
-            executor.shutdown()
             raise
+
+        for _ in range(num_threads):
+            state.jobs.put(None)  # Send stop signal to all workers
+
+        try:
+            state.jobs.join()     # Wait for all workers to stop
+        except KeyboardInterrupt:
+            state.aborted = True
+            raise
+
+        waited_fs = wait(fs, timeout=CLEANUP_TIMEOUT)  # Wait for all threads
+        if len(waited_fs.not_done) > 0:
+            log.warning("WARNING: Not waiting for worker threads that took too long to terminate.")
+
+        done_fs = waited_fs.done
 
         try:
             for f in done_fs:
@@ -244,14 +269,164 @@ def find_repos(
     if match_count < found_count:
         _matches = "match" if match_count == 1 else "matches"
         _repositories = "repository" if found_count == 1 else "repositories"
-        log.info("Found %d %s from %d %s", match_count, _matches, found_count, _repositories)
+        log.debug("Found %d %s from %d %s", match_count, _matches, found_count, _repositories)
     else:
         _repositories = "repository" if match_count == 1 else "repositories"
-        log.info("Found %d %s", match_count, _repositories)
+        log.debug("Found %d %s", match_count, _repositories)
 
     return results
 
 
-@app.command("find", help="")
-def cmd_find():
-    pass
+@app.command("find", help="Search for local repositories")
+def cmd_find(
+    query_name: Annotated[Optional[str], typer.Argument(
+        help="(Search condition) repository name",
+    )] = None,
+    find_max_depth: Annotated[Optional[int], typer.Option(
+        "-d", "--depth",
+        help="Repository search depth",
+    )] = None,
+    query_remote_name: Annotated[Optional[str], typer.Option(
+        "-r", "--remote",
+        help="(Search condition) Repository remote name (e.g. 'origin')",
+    )] = None,
+    query_remote_url: Annotated[Optional[str], typer.Option(
+        "-u", "--url",
+        help="(Search condition) Repository remote url",
+    )] = None,
+    query_clean: Annotated[Optional[bool], typer.Option(
+        "--clean/--dirty",
+        help="(Search condition) Whether working tree contains/does not contain uncommitted changes to tracked files",
+    )] = None,
+    matcher_case_sensitive: Annotated[Optional[bool], typer.Option(
+        "-C", "--case-sensitive",
+        help="Case sensitive search query",
+    )] = None,
+    matcher_exact: Annotated[Optional[bool], typer.Option(
+        "-e", "--exact", 
+        help="Perform an exact match of search query (default: substring match)",
+    )] = None,
+    sort: Annotated[bool, typer.Option(
+        "--sort/--no-sort",
+        help="Sort search results",
+    )] = True,
+    output: Annotated[Optional[FindOutput], typer.Option(
+        "-o", "--output",
+        help="Output format",
+    )] = None
+):
+    config = get_config()
+
+    if find_max_depth is not None:
+        config.find_max_depth = find_max_depth
+
+    if query_remote_name is not None:
+        config.query_remote_name = query_remote_name
+
+    if query_remote_url is not None:
+        config.query_remote_url = query_remote_url
+    
+    if query_clean is not None:
+        config.query_clean = query_clean
+
+    if matcher_case_sensitive is not None:
+        config.matcher_case_sensitive = matcher_case_sensitive
+    
+    if matcher_exact is not None:
+        config.matcher_exact = matcher_exact
+
+    if query_name is not None:
+        config.query_name = query_name
+
+    matcher = Matcher(
+        query_name=config.query_name,
+        query_remote_name=config.query_remote_name,
+        query_remote_url=config.query_remote_url,
+        query_clean=config.query_clean,
+        case_sensitive=config.matcher_case_sensitive,
+        exact=config.matcher_exact,
+    )
+    repos = find_repos(config.find_path, config.find_max_depth, matcher)
+
+    if sort:
+        repos.sort(key=lambda repo: str(repo.path))
+
+
+    for repo in repos:
+        if output == FindOutput.NAME:
+            print(repo.path.name)
+        else:
+            print(repo.path)
+
+
+@app.command("ls", help="List git repositories in current directory")
+def cmd_list(
+    sort: Annotated[bool, typer.Option(
+        "--sort/--no-sort",
+        help="Sort output",
+    )] = True,
+    long: Annotated[bool, typer.Option(
+        "-l", "--long",
+        help="Display long output",
+    )] = False,
+    show_legend: Annotated[bool, typer.Option(
+        "-g", "--legend",
+        help="Display headers and legend on long output"
+    )] = False,
+):
+    repos = find_repos(Path.cwd(), 1)
+
+    if sort:
+        repos.sort(key=lambda repo: str(repo.path))
+
+    if not long:
+        for repo in repos:
+            print(repo.path.name)
+        return
+    
+    with ThreadPoolExecutor(max_workers=max_threads(8)) as executor:
+        fs = (executor.submit(lambda repo: repo.status(), repo) for repo in repos)
+        try:
+            wait(fs, timeout=60.0)
+        except KeyboardInterrupt:
+            log.warning("Aborting repository status check")
+            for f in fs:
+                f.cancel()
+            raise
+
+    table = Table(
+        pad_edge=False,
+        box=None,
+        show_header=show_legend,
+        header_style="underline",
+        show_footer=show_legend,
+        caption="X: Index, Y: Working Tree, ?: Untracked, A: Ahead, B: Behind" if show_legend else None,
+        caption_justify="left",
+    )
+    table.add_column("X", justify="right")
+    table.add_column("Y", justify="right")
+    table.add_column("?", justify="right")
+    table.add_column("A", justify="right")
+    table.add_column("B", justify="right")
+    table.add_column("HEAD")
+    table.add_column("Upstream")
+    table.add_column("Name")
+    table.add_column()  # Interactive git operations in progress
+
+    for repo in repos:
+        renderer = Renderer(repo)
+        status = repo.status()
+
+        table.add_row(
+            Text(str(status.index), style="green" if status.index else "dim"),
+            Text(str(status.work_tree), style="red" if status.work_tree else "dim"),
+            Text(str(status.untracked), style="red" if status.untracked else "dim"),
+            renderer.branch_ahead(),
+            renderer.branch_behind(),
+            renderer.head(),
+            renderer.branch_upstream(),
+            renderer.name(status=True),
+            renderer.in_progress(),
+        )
+
+    rich_print(table)

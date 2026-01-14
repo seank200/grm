@@ -4,6 +4,7 @@ import re
 import subprocess
 from collections.abc import Sequence
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from rich.text import Text
 from typing import Optional, Union
@@ -12,14 +13,31 @@ from .config import get_config
 
 type StrOrBytesPath = Union[str, bytes, os.PathLike[str], os.PathLike[bytes], Sequence[Union[str, bytes, os.PathLike[str], os.PathLike[bytes]]]]
 
-NO_COMMIT = "(initial)"
-NO_BRANCH = "(detached)"
-RE_AHEAD = re.compile(r"\+([0-9]+)")
-RE_BEHIND = re.compile(r"-([0-9]+)")
+NO_COMMIT = "No commits yet on "
+DETACHED = "HEAD (no branch)"
+RE_AHEAD = re.compile(r"ahead ([0-9]+)")
+RE_BEHIND = re.compile(r"behind ([0-9]+)")
 RUN_TIMEOUT = 60.0
+UNMERGED_STATUS = set((
+    "DD",  # unmerged, both deleted
+    "AU",  # unmerged, added by us
+    "UD",  # unmerged, deleted by them
+    "UA",  # unmerged, added by them
+    "DU",  # unmerged, deleted by us
+    "AA",  # unmerged, both added
+    "UU",  # unmerged, both modified
+))
 
 log = logging.getLogger(__name__)
 
+
+class GitOperation(Enum):
+    MERGE = "merge"
+    REBASE = "rebase"
+    CHERRY_PICK = "cherry-pick"
+    REVERT = "revert"
+    BISECT = "bisect"
+    SEQUENCER = "sequencer"
 
 
 @dataclass
@@ -40,10 +58,16 @@ class GitHead:
 @dataclass
 class GitStatus:
     head: GitHead
-    stashed: int = 0
-    tracked: int = 0
+    index: int = 0
+    """Number of changes in index (added)"""
+    work_tree: int = 0
+    """Number of changes in working tree"""
     untracked: int = 0
+    """Number of untracked objects"""
     unmerged: int = 0
+    """Number of unmerged objects"""
+    in_progress: Optional[GitOperation] = None
+    """Interactive git operation currently in progress"""
 
 
 @dataclass
@@ -170,7 +194,7 @@ class GitRepo:
 
     def is_clean(self) -> bool:
         status = self.status()
-        return status.tracked + status.unmerged == 0
+        return status.index + status.work_tree + status.unmerged == 0
     
     def get_remotes(self) -> dict[str, GitRemote]:
         if self._remotes is None:
@@ -215,74 +239,100 @@ class GitRepo:
         self._status = None
 
     def status(self) -> GitStatus:
-        if self._status is None:
+        if self._status is not None:
+            return self._status
+
+        try:
+            proc = self.run(["git", "status", "--porcelain", "--branch"])
+        except subprocess.CalledProcessError as e:
+            log.error("Failed to check status of '%s'. %s",
+                        self.path, e.stderr)
+            raise
+
+        head = GitHead()
+        status = GitStatus(head)
+        no_commits_yet = False
+
+        for line in proc.stdout.splitlines():
+            if line.startswith("## "):
+                # main...origin/main [behind 8]
+                name_start = 3
+                name_end = line.find("...", name_start)
+                if name_end < 0:
+                    name = line[name_start:]
+                else:
+                    name = line[name_start:name_end]
+
+                if name.startswith(NO_COMMIT):
+                    no_commits_yet = True
+                    continue
+
+                if name.startswith(DETACHED):
+                    continue
+
+                branch = GitBranch(name=name, is_head=True)
+                head.branch = branch
+
+                if name_end < 0:
+                    continue
+
+                branch.ahead = 0
+                branch.behind = 0
+
+                upstream_start = name_end + 3
+                upstream_end = line.find(" [", upstream_start)
+                if upstream_end < 0:
+                    branch.upstream = line[upstream_start:]
+                    continue
+                branch.upstream = line[upstream_start:upstream_end]
+
+                ab_start = upstream_end + 2
+                a_match = RE_AHEAD.search(line, ab_start)
+                if a_match:
+                    branch.ahead = int(a_match.group(1))
+                b_match = RE_BEHIND.search(line, ab_start)
+                if b_match:
+                    branch.behind = int(b_match.group(1))
+            elif line.startswith("??"):
+                status.untracked += 1
+            else:
+                xy = line[0:2]
+                if xy in UNMERGED_STATUS:
+                    status.unmerged += 1
+                else:
+                    if xy[0] != " ":
+                        status.index += 1
+                    if xy[1] != " ":
+                        status.work_tree += 1
+
+        if head.branch is None and not no_commits_yet:
             try:
-                proc = self.run(["git", "status", "--porcelain=v2", "--branch"])
+                proc = self.run(("git", "rev-parse", "HEAD"))
             except subprocess.CalledProcessError as e:
-                log.error("Failed to check status of '%s'. %s",
-                          self.path, e.stderr)
+                log.error("Failed to read refname of HEAD. %s", e.stderr)
                 raise
 
-            status = GitStatus(GitHead())
-            head = status.head
+            head.oid = proc.stdout.rstrip("\n")
 
-            for line in proc.stdout.splitlines():
-                if line.startswith("# branch.oid "):
-                    oid = line[len("# branch.oid "):]
-                    if oid != NO_COMMIT:
-                        head.oid = oid
+        if self.path.joinpath(".git", "rebase-merge").is_dir() \
+            or self.path.joinpath(".git", "rebase-apply").is_dir():
+            status.in_progress = GitOperation.REBASE
+        elif self.path.joinpath(".git", "MERGE_HEAD").is_file():
+            status.in_progress = GitOperation.MERGE
+        elif self.path.joinpath(".git", "CHERRY_PICK_HEAD").is_file():
+            status.in_progress = GitOperation.CHERRY_PICK
+        elif self.path.joinpath(".git", "REVERT_HEAD").is_file():
+            status.in_progress = GitOperation.REVERT
+        elif self.path.joinpath(".git", "BISECT_LOG").is_file():
+            status.in_progress = GitOperation.BISECT
+        elif self.path.joinpath(".git", "sequencer").is_dir():
+            status.in_progress = GitOperation.SEQUENCER
 
-                elif line.startswith("# branch.head "):
-                    branch_name = line[len("# branch.head "):]
-                    if branch_name != NO_BRANCH:
-                        head.branch = GitBranch(branch_name)
-
-                elif line.startswith("# branch.upstream "):
-                    if head.branch is not None:
-                        head.branch.upstream = line[len("# branch.upstream "):]
-
-                elif line.startswith("# branch.ab "):
-                    start = len("# branch.ab ")
-
-                    if head.branch is not None:
-                        try:
-                            m_ahead = RE_AHEAD.search(line, start)
-                            if m_ahead:
-                                head.branch.ahead = int(m_ahead.group(1))
-                            
-                            m_behind = RE_BEHIND.search(line, start)
-                            if m_behind:
-                                head.branch.behind = int(m_behind.group(1))
-                        except ValueError:
-                            log.warning("(%s) Invalid git-status line: %s",
-                                        self.path, line)
-                            head.branch.ahead = -1
-                            head.branch.behind = -1
-
-                elif line.startswith("# stash "):
-                    try:
-                        status.stashed = int(line[len("# stash "):])
-                    except ValueError:
-                        log.warning("(%s) Invalid git-status line: %s",
-                                    self.path, line)
-                        status.stashed = -1
-
-                elif line.startswith("1 ") or line.startswith("2 "):
-                    status.tracked += 1
-
-                elif line.startswith("u "):
-                    status.unmerged += 1
-
-                elif line.startswith("? "):
-                    status.untracked += 1
-
-                else:
-                    log.debug("(%s) Ignoring git-status line: %s",
-                                self.path, line)
-
-            self._status = status
-        
+        self._status = status
         return self._status
+    
+    def head(self) -> GitHead:
+        return self.status().head
 
     def run(self, args: StrOrBytesPath, check: bool = True) -> subprocess.CompletedProcess[str]:
         try:

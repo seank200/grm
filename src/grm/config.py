@@ -2,13 +2,13 @@ import logging
 import sys
 import typer
 from dataclasses import dataclass, asdict
-from pathlib import Path
+from pathlib import PurePath, Path
 from rich import print as rich_print
 from rich.console import Console
 from rich.logging import RichHandler
 from rich.table import Table
+from rich.text import Text
 from typing import Annotated, Optional
-from .exceptions import InvalidOptionsError
 
 
 app = typer.Typer()
@@ -18,7 +18,7 @@ log = logging.getLogger(__name__)
 @dataclass
 class AppConfig:
     find_path: Path
-    find_depth: int
+    find_max_depth: int
 
     query_name: Optional[str]
     query_remote_name: Optional[str]
@@ -28,7 +28,6 @@ class AppConfig:
     matcher_exact: bool
 
     debug: bool
-    quiet: int
     color: Optional[bool]
 
 
@@ -62,7 +61,7 @@ def get_state() -> AppState:
 def configure(
     find_path: Annotated[Path, typer.Option(
         "-p", "--path",
-        envvar="GRM_PATH",
+        envvar="GRM_FIND_PATH",
         exists=True,
         file_okay=False,
         dir_okay=True,
@@ -70,14 +69,14 @@ def configure(
         show_default="Current directory",
         help="Repository search root path",
     )],
-    find_depth: Annotated[int, typer.Option(
+    find_max_depth: Annotated[int, typer.Option(
         "-d", "--depth",
-        envvar="GRM_DEPTH",
+        envvar="GRM_FIND_MAX_DEPTH",
         help="Repository search depth",
     )] = 1,
     query_name: Annotated[Optional[str], typer.Option(
         "-n", "--name",
-        help="(Search condition) Repository name",
+        help="(Search condition) Repository path basename",
     )] = None,
     query_remote_name: Annotated[Optional[str], typer.Option(
         "-r", "--remote",
@@ -92,7 +91,7 @@ def configure(
         help="(Search condition) Whether working tree contains/does not contain uncommitted changes to tracked files",
     )] = None,
     matcher_case_sensitive: Annotated[bool, typer.Option(
-        "-c/-C", "--case-sensitive/--case-insensitive",
+        "-C", "--case-sensitive",
         envvar="GRM_MATCHER_CASE_SENSITIVE",
         help="Case sensitive search query",
     )] = False,
@@ -104,22 +103,18 @@ def configure(
     debug: Annotated[bool, typer.Option(
         "--debug",
         envvar="GRM_DEBUG",
-        help="Output verbose logs for debugging (ignored when --quiet is set)",
+        help="Output verbose logs for debugging",
     )] = False,
-    quiet: Annotated[int, typer.Option(
-        "-q", "--quiet",
-        count=True,
-        help="Suppress all logging (specify twice to suppress all output). Overrides --debug.",
-    )] = 0,
     color: Annotated[Optional[bool], typer.Option(
-        help="Always enable/disable color (default: enable when output is an interactive terminal)",
+        envvar="GRM_COLOR",
+        help="Always enable/disable color (default: enabled when output is an interactive terminal)",
     )] = None,
 ):
     global config, state
 
     config = AppConfig(
         find_path=find_path.expanduser(),
-        find_depth=find_depth,
+        find_max_depth=find_max_depth,
         query_name=query_name,
         query_remote_name=query_remote_name,
         query_remote_url=query_remote_url,
@@ -127,7 +122,6 @@ def configure(
         matcher_case_sensitive=matcher_case_sensitive,
         matcher_exact=matcher_exact,
         debug=debug,
-        quiet=quiet,
         color=color,
     )
 
@@ -146,6 +140,7 @@ def configure(
         show_level=debug,
         show_path=False,
         log_time_format="%Y-%m-%d %H:%M:%S",
+        console=state.console,
     )
 
     if debug:
@@ -160,10 +155,29 @@ def configure(
 @app.command("config", help="Output current configuration")
 def cmd_config():
     table = Table(pad_edge=False, box=None, show_header=False)
-    table.add_column(style="cyan")
+    table.add_column(style="bold")
     table.add_column()
 
     for k, v in asdict(get_config()).items():
-        table.add_row(k, str(v))
+        if v is None:
+            _v = Text("None", style="dim")
+        elif type(v) == bool:
+            _v = Text(str(v), style="red")
+        elif type(v) == str:
+            _v = Text(f"'{v}'", style="green")
+        elif type(v) == int or type(v) == float:
+            _v = Text(str(v), style="cyan")
+        elif isinstance(v, PurePath):
+            _v = Text(str(v), style="magenta")
+        else:
+            _v = Text(str(v))
+
+        table.add_row(k, _v)
 
     rich_print(table)
+
+
+@app.command("path", help="Output repository search path")
+def cmd_path():
+    config = get_config()
+    print(config.find_path)

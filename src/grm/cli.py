@@ -1,11 +1,13 @@
 import logging
 import typer
-from .config import configure, get_config, app as config_app
+from .config import configure, app as config_app
 from .exceptions import GrmError
+from .find import app as find_app
 
 
 app = typer.Typer(callback=configure)
 app.add_typer(config_app)
+app.add_typer(find_app)
 
 log = logging.getLogger(__name__)
 
@@ -22,9 +24,3 @@ def main():
     except Exception as e:
         log.critical("Command error: %s", e, exc_info=True)
     return 1
-
-
-@app.command("path", help="Output repository search path")
-def cmd_path():
-    config = get_config()
-    print(config.find_path)
