@@ -27,6 +27,7 @@ class AppConfig:
     matcher_case_sensitive: bool
     matcher_exact: bool
 
+    include_hidden: bool
     debug: bool
     color: Optional[bool]
 
@@ -106,6 +107,11 @@ def configure(
         envvar="GRM_MATCHER_EXACT",
         help="Perform an exact match of search query (default: substring match)",
     )] = False,
+    include_hidden: Annotated[bool, typer.Option(
+        "-a", "--all",
+        envvar="GRM_INCLUDE_HIDDEN",
+        help="Include hidden repositories (repository name starting with '.') and repositories contained in hidden directories",
+    )] = False,
     debug: Annotated[bool, typer.Option(
         "--debug",
         envvar="GRM_DEBUG",
@@ -127,6 +133,7 @@ def configure(
         query_clean=query_clean,
         matcher_case_sensitive=matcher_case_sensitive,
         matcher_exact=matcher_exact,
+        include_hidden=include_hidden,
         debug=debug,
         color=color,
     )

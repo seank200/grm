@@ -5,11 +5,8 @@ import threading
 import typer
 from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import dataclass
-from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from rich import print as rich_print
-from rich.text import Text
 from rich.table import Table
 from typing import Annotated, Optional
 from .config import get_config, get_console
@@ -17,9 +14,6 @@ from .exceptions import GrmError
 from .git import GitRepo
 from .render import Renderer
 from .utils import max_threads
-
-
-LEGEND = "i: index, w: working tree, u: untracked, m: unmerged, a: ahead, b: behind"
 
 
 class FindOutput(Enum):
@@ -44,9 +38,11 @@ class FindState:
 class FindOptions:
     path: Path
     max_depth: int
+    include_hidden: bool
     matcher: 'Matcher'
 
 
+LEGEND = "i: index, w: working tree, u: untracked, m: unmerged, a: ahead, b: behind"
 CLEANUP_TIMEOUT = 10.0
 WORKER_TIMEOUT = 5.0
 
@@ -133,7 +129,11 @@ class Matcher:
                 or self.query_clean is not None
 
 
-def _do_job(options: FindOptions, state: FindState, job: FindJob):
+def _do_job(options: FindOptions, state: FindState, job: FindJob) -> bool:
+    if not options.include_hidden \
+        and job.path.name.startswith(".") and job.depth > 0:
+        return False
+
     if job.path.joinpath(".git").is_dir():
         repo = GitRepo(job.path)
         is_match = options.matcher.matches_name(repo) \
@@ -219,11 +219,12 @@ def _find_worker(options: FindOptions, state: FindState):
 def find_repos(
     path: Path,
     max_depth: int,
+    include_hidden: bool,
     matcher: Optional[Matcher] = None,
 ) -> list[GitRepo]:
     results: list[GitRepo] = []
 
-    options = FindOptions(path, max_depth, matcher or Matcher())
+    options = FindOptions(path, max_depth, include_hidden, matcher or Matcher())
     state = FindState(
         jobs=queue.Queue(),
         results=results,
@@ -278,6 +279,9 @@ def find_repos(
         _repositories = "repository" if match_count == 1 else "repositories"
         log.debug("Found %d %s", match_count, _repositories)
 
+    if not results:
+        raise GrmError(f"No repositories found in {path}")
+
     return results
 
 
@@ -310,6 +314,10 @@ def cmd_find(
         "-e", "--exact", 
         help="Perform an exact match of search query (default: substring match)",
     )] = None,
+    include_hidden: Annotated[Optional[bool], typer.Option(
+        "-a", "--all",
+        help="Include hidden repositories (repository name starting with '.') and repositories contained in hidden directories",
+    )] = None,
     sort: Annotated[bool, typer.Option(
         "--sort/--no-sort",
         help="Sort search results",
@@ -339,6 +347,9 @@ def cmd_find(
     if matcher_exact is not None:
         config.matcher_exact = matcher_exact
 
+    if include_hidden is not None:
+        config.include_hidden = include_hidden
+
     if query_name is not None:
         config.query_name = query_name
 
@@ -350,7 +361,13 @@ def cmd_find(
         case_sensitive=config.matcher_case_sensitive,
         exact=config.matcher_exact,
     )
-    repos = find_repos(config.find_path, config.find_max_depth, matcher)
+
+    repos = find_repos(
+        config.find_path,
+        config.find_max_depth,
+        config.include_hidden,
+        matcher
+    )
 
     if sort:
         repos.sort(key=lambda repo: str(repo.path))
@@ -381,12 +398,21 @@ def cmd_list(
         "-l", "--long",
         help="Display output in the long format",
     )] = False,
+    include_hidden: Annotated[Optional[bool], typer.Option(
+        "-a", "--all",
+        help="Include hidden repositories (repository name starting with '.') and repositories contained in hidden directories",
+    )] = None,
     show_legend: Annotated[bool, typer.Option(
         "-g", "--legend",
         help="Show column headers and legend on long output"
     )] = False,
 ):
-    repos = find_repos(path, 1)
+    config = get_config()
+
+    if include_hidden is not None:
+        config.include_hidden = include_hidden
+
+    repos = find_repos(path, 1, config.include_hidden)
 
     if sort:
         repos.sort(key=lambda repo: str(repo.path))
