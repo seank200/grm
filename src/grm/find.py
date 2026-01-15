@@ -5,17 +5,21 @@ import threading
 import typer
 from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from rich import print as rich_print
 from rich.text import Text
 from rich.table import Table
 from typing import Annotated, Optional
-from .config import get_config
+from .config import get_config, get_console
 from .exceptions import GrmError
 from .git import GitRepo
 from .render import Renderer
 from .utils import max_threads
+
+
+LEGEND = "i: index, w: working tree, u: untracked, m: unmerged, a: ahead, b: behind"
 
 
 class FindOutput(Enum):
@@ -359,22 +363,30 @@ def cmd_find(
             print(repo.path)
 
 
-@app.command("ls", help="List git repositories in current directory")
+@app.command("ls", help="List git repositories in directory")
 def cmd_list(
+    path: Annotated[Path, typer.Argument(
+        exists=True,
+        file_okay=False,
+        dir_okay=True,
+        default_factory=Path.cwd,
+        show_default="Current directory",
+        help="Directory path",
+    )],
     sort: Annotated[bool, typer.Option(
         "--sort/--no-sort",
         help="Sort output",
     )] = True,
     long: Annotated[bool, typer.Option(
         "-l", "--long",
-        help="Display long output",
+        help="Display output in the long format",
     )] = False,
     show_legend: Annotated[bool, typer.Option(
         "-g", "--legend",
-        help="Display headers and legend on long output"
+        help="Show column headers and legend on long output"
     )] = False,
 ):
-    repos = find_repos(Path.cwd(), 1)
+    repos = find_repos(path, 1)
 
     if sort:
         repos.sort(key=lambda repo: str(repo.path))
@@ -384,8 +396,11 @@ def cmd_list(
             print(repo.path.name)
         return
     
-    with ThreadPoolExecutor(max_workers=max_threads(8)) as executor:
-        fs = (executor.submit(lambda repo: repo.status(), repo) for repo in repos)
+    num_workers = max_threads(len(repos))
+    log.debug("Checking repository status with %d workers", num_workers)
+    with ThreadPoolExecutor(max_workers=num_workers) as executor:
+        fs = (executor.submit(lambda repo: repo.status(), repo)
+              for repo in repos)
         try:
             wait(fs, timeout=60.0)
         except KeyboardInterrupt:
@@ -396,37 +411,38 @@ def cmd_list(
 
     table = Table(
         pad_edge=False,
+        collapse_padding=False,
         box=None,
         show_header=show_legend,
-        header_style="underline",
+        header_style="underline" if show_legend else None,
         show_footer=show_legend,
-        caption="X: Index, Y: Working Tree, ?: Untracked, A: Ahead, B: Behind" if show_legend else None,
+        caption=LEGEND if show_legend else None,
         caption_justify="left",
     )
-    table.add_column("X", justify="right")
-    table.add_column("Y", justify="right")
-    table.add_column("?", justify="right")
-    table.add_column("A", justify="right")
-    table.add_column("B", justify="right")
+
+    table.add_column("Status")
     table.add_column("HEAD")
-    table.add_column("Upstream")
+    table.add_column()
+    table.add_column("Last modified") # Author date (if HEAD is a commit)
     table.add_column("Name")
-    table.add_column()  # Interactive git operations in progress
+
+    config = get_config()
 
     for repo in repos:
-        renderer = Renderer(repo)
+        render = Renderer(repo)
         status = repo.status()
 
-        table.add_row(
-            Text(str(status.index), style="green" if status.index else "dim"),
-            Text(str(status.work_tree), style="red" if status.work_tree else "dim"),
-            Text(str(status.untracked), style="red" if status.untracked else "dim"),
-            renderer.branch_ahead(),
-            renderer.branch_behind(),
-            renderer.head(),
-            renderer.branch_upstream(),
-            renderer.name(status=True),
-            renderer.in_progress(),
-        )
+        col1 = render.status(color=config.color is not False)
+        col2 = render.head()
+        
+        if status.unmerged > 0 or status.operation is not None:
+            col3 = render.operation(color=config.color is not False)
+        else:
+            col3 = render.upstream_branch()
 
-    rich_print(table)
+        col4 = render.last_modified_date()
+        col5 = render.name(status_color=config.color is not False)
+
+        table.add_row(col1, col2, col3, col4, col5)
+
+    get_console().print(table)

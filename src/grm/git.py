@@ -4,6 +4,7 @@ import re
 import subprocess
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from rich.text import Text
@@ -45,19 +46,27 @@ class GitBranch:
     name: str
     is_head: bool = False
     upstream: Optional[str] = None
-    ahead: int = -1
-    behind: int = -1
+    ahead: int = 0
+    behind: int = 0
+
+
+@dataclass
+class GitCommit:
+    commit_hash: str
+    subject: str
+    author_date: datetime
 
 
 @dataclass
 class GitHead:
-    oid: Optional[str] = None
     branch: Optional[GitBranch] = None
+    commit: Optional[GitCommit] = None
 
 
 @dataclass
 class GitStatus:
     head: GitHead
+
     index: int = 0
     """Number of changes in index (added)"""
     work_tree: int = 0
@@ -66,8 +75,42 @@ class GitStatus:
     """Number of untracked objects"""
     unmerged: int = 0
     """Number of unmerged objects"""
-    in_progress: Optional[GitOperation] = None
+    operation: Optional[GitOperation] = None
     """Interactive git operation currently in progress"""
+
+    @property
+    def ahead(self) -> int:
+        return 0 if self.head.branch is None else self.head.branch.ahead
+    
+    @property
+    def behind(self) -> int:
+        return 0 if self.head.branch is None else self.head.branch.behind
+
+    def concise(self) -> str:
+        """
+        Return a concise representation of repository status (iwuabc)
+        - i: index
+        - w: working tree
+        - u: untracked
+        - a: ahead
+        - b: behind
+        - c: conflict(unmerged)
+        """
+        s = ""
+
+        s += "i" if self.index > 0 else "-"
+        s += "w" if self.work_tree > 0 else "-"
+        s += "u" if self.untracked > 0 else "-"
+
+        if self.head.branch and self.head.branch.upstream:
+            s += "a" if self.head.branch.ahead > 0 else "-"
+            s += "b" if self.head.branch.behind > 0 else "-"
+        else:
+            s += "--"
+
+        s += "c" if (self.unmerged > 0 or self.operation is not None) else "-"
+
+        return s
 
 
 @dataclass
@@ -305,28 +348,41 @@ class GitRepo:
                     if xy[1] != " ":
                         status.work_tree += 1
 
-        if head.branch is None and not no_commits_yet:
+        if not no_commits_yet:
             try:
-                proc = self.run(("git", "rev-parse", "HEAD"))
-            except subprocess.CalledProcessError as e:
-                log.error("Failed to read refname of HEAD. %s", e.stderr)
-                raise
+                proc = self.run(("git", "log", "-n", "1", "--format=%H..%aI..%s"))
 
-            head.oid = proc.stdout.rstrip("\n")
+                head_commit_out = proc.stdout
+                hash_end = head_commit_out.index("..")
+                commit_hash = head_commit_out[:hash_end]
+                
+                author_date_start = hash_end + 2
+                author_date_end = head_commit_out.index("..", author_date_start)
+                author_date = datetime.fromisoformat(head_commit_out[author_date_start:author_date_end])
+
+                subject = head_commit_out[author_date_end + 2:].rstrip("\n")
+
+                head.commit = GitCommit(
+                    commit_hash=commit_hash,
+                    author_date=author_date,
+                    subject=subject
+                )
+            except subprocess.CalledProcessError as e:
+                log.error("Failed to read HEAD commit metadata of '%s'. %s", self.path, e.stderr)
 
         if self.path.joinpath(".git", "rebase-merge").is_dir() \
             or self.path.joinpath(".git", "rebase-apply").is_dir():
-            status.in_progress = GitOperation.REBASE
+            status.operation = GitOperation.REBASE
         elif self.path.joinpath(".git", "MERGE_HEAD").is_file():
-            status.in_progress = GitOperation.MERGE
+            status.operation = GitOperation.MERGE
         elif self.path.joinpath(".git", "CHERRY_PICK_HEAD").is_file():
-            status.in_progress = GitOperation.CHERRY_PICK
+            status.operation = GitOperation.CHERRY_PICK
         elif self.path.joinpath(".git", "REVERT_HEAD").is_file():
-            status.in_progress = GitOperation.REVERT
+            status.operation = GitOperation.REVERT
         elif self.path.joinpath(".git", "BISECT_LOG").is_file():
-            status.in_progress = GitOperation.BISECT
+            status.operation = GitOperation.BISECT
         elif self.path.joinpath(".git", "sequencer").is_dir():
-            status.in_progress = GitOperation.SEQUENCER
+            status.operation = GitOperation.SEQUENCER
 
         self._status = status
         return self._status

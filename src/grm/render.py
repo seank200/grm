@@ -1,8 +1,12 @@
-from pathlib import Path
+from datetime import datetime, timedelta
 from rich.text import Text
-from typing import Optional, Union
+from typing import Union
 from .config import get_config
 from .git import GitRepo
+
+
+CURRENT_YEAR = datetime.now().year
+DATE_THRESHOLD = timedelta(days=180)
 
 
 class Renderer:
@@ -11,102 +15,101 @@ class Renderer:
         repo: GitRepo,
     ):
         self.repo = repo
-        self.base_path = get_config().find_path
+        
+        config = get_config()
+        self.base_path = config.find_path
 
-    def name(self, status: bool = False) -> Text:
-        if status:
-            _status = self.repo.status()
-            branch = _status.head.branch
-            ahead = branch.ahead if branch else -1
-            behind = branch.behind if branch else -1
+    def name(self, status_color: bool = False) -> Union[str, Text]:
+        if not status_color:
+            return self.repo.name
+        
+        status = self.repo.status()
 
-            if _status.in_progress is not None or (ahead > 0 and behind > 0):
-                style = "magenta"
-            elif _status.work_tree > 0:
-                style = "red"
-            elif _status.index > 0:
-                style = "green"
-            elif ahead + behind > 0:
-                style = "cyan"
-            else:
-                style = ""
+        if status.unmerged > 0 or (status.operation is not None) or (status.ahead > 0 and status.behind > 0):
+            style = "yellow"
+        elif status.work_tree > 0:
+            style = "red"
+        elif status.index > 0:
+            style = "green"
+        elif status.ahead > 0 or status.behind > 0:
+            style = "cyan"
         else:
             style = ""
 
         return Text(self.repo.name, style=style)
+
+
+    def status(self, color: bool = True) -> Union[str, Text]:
+        status = self.repo.status().concise()
+
+        if not color:
+            return status
+        
+        text = Text(status)
+
+        if status[0] != "-":
+            text.stylize("green", 0, 1)
+
+        if status[1] != "-":
+            text.stylize("red", 1, 2)
+
+        if status[2] != "-":
+            text.stylize("red", 2, 3)
+
+        if status[3] != "-":
+            text.stylize("cyan" if status[4] == "-" else "yellow", 3, 4)
+
+        if status[4] != "-":
+            text.stylize("cyan" if status[3] == "-" else "yellow", 4, 5)
+
+        if status[5] != "-":
+            text.stylize("yellow", 5, 6)
+
+        return text
     
-    def path(self, relative_to: Optional[Path] = None) -> str:
-        return str(self.repo.path.relative_to(relative_to)) if relative_to \
-            else str(self.repo.path)
-    
-    def head(self, short: bool = True) -> Union[str, Text]:
+    def head(self) -> Union[str, Text]:
         status = self.repo.status()
         head = status.head
 
-        if head.branch is None:
-            if head.oid:
-                return Text(f"{head.oid[:8] if short else head.oid}", style="red" if status.in_progress is None else "magenta")
-            else:
-                return Text("(no commits)", style="dim")
-
-        return head.branch.name
+        if head.branch is not None:
+            return head.branch.name
+        
+        if head.commit is not None:
+            return Text(
+                head.commit.commit_hash[:8],
+                style="red" if status.operation is None else "yellow",
+            )
+        
+        return "-"
     
-    def branch_upstream(self) -> Union[str, Text]:
+    def last_modified_date(self) -> Union[str, Text]:
+        """Returns the author date of HEAD, if HEAD is pointing to a commit"""
         status = self.repo.status()
         head = status.head
 
-        if head.branch is None:
-            return Text("-", style="dim")
+        if head.commit is None:
+            return "-"
         
-        if head.branch.upstream is None:
-            return Text("-", style="dim")
+        author_date = head.commit.author_date
+
+        if author_date.year != CURRENT_YEAR:
+            return author_date.strftime("%b %d  %Y")
         
-        return head.branch.upstream
+        return author_date.strftime("%b %d %H:%M")
     
-    def branch_ahead(self) -> Union[str, Text]:
+    def upstream_branch(self) -> Union[str, Text]:
         head = self.repo.head()
 
-        if head.branch is None:
-            return Text("-", style="dim")
+        if head.branch and head.branch.upstream:
+            return head.branch.upstream
         
-        if head.branch.ahead < 0:
-            return Text("-", style="dim")
-
-        if head.branch.ahead > 0 and head.branch.behind > 0:
-            style = "magenta"
-        elif head.branch.ahead > 0:
-            style = "cyan"
-        else:
-            style = "dim"
-        
-        return Text(str(head.branch.ahead), style=style)
-
-    def branch_behind(self) -> Union[str, Text]:
-        head = self.repo.head()
-
-        if head.branch is None:
-            return Text("-", style="dim")
-        
-        if head.branch.behind < 0:
-            return Text("-", style="dim")
-
-        if head.branch.ahead > 0 and head.branch.behind > 0:
-            style = "magenta"
-        elif head.branch.behind > 0:
-            style = "cyan"
-        else:
-            style = "dim"
-        
-        return Text(str(head.branch.behind), style=style)
+        return "-"
     
-    def in_progress(self) -> Union[str, Text]:
+    def operation(self, color: bool = True) -> Union[str, Text]:
         status = self.repo.status()
 
-        if status.in_progress is None:
-            return ""
+        if status.operation is None:
+            return "-"
         
-        return Text(f"{status.in_progress.value}~{status.unmerged}", style="magenta")
-
-
-def render_repos(repos):
-    pass
+        return Text(f"{status.operation.value}~{status.unmerged}",
+                    style="yellow" if color else "")

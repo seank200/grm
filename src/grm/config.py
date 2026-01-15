@@ -33,7 +33,8 @@ class AppConfig:
 
 @dataclass
 class AppState:
-    console: Console
+    console_out: Console
+    console_err: Console
 
 
 config: Optional[AppConfig] = None
@@ -56,6 +57,11 @@ def get_state() -> AppState:
         raise RuntimeError("Application not initialized")
     
     return state
+
+
+def get_console(stderr: bool = False) -> Console:
+    state = get_state()
+    return state.console_err if stderr else state.console_out
 
 
 def configure(
@@ -126,7 +132,10 @@ def configure(
     )
 
     state = AppState(
-        console=Console(
+        console_out=Console(
+            no_color=(None if color is None else (not color)),
+        ),
+        console_err=Console(
             stderr=True,
             no_color=(None if color is None else (not color)),
         ),
@@ -140,7 +149,7 @@ def configure(
         show_level=debug,
         show_path=False,
         log_time_format="%Y-%m-%d %H:%M:%S",
-        console=state.console,
+        console=state.console_err,
     )
 
     if debug:
