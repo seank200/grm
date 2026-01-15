@@ -150,11 +150,16 @@ class GitRepo:
         prune_tags: bool = False,
         refetch: bool = False,
         tags: bool = False,
+        quiet: bool = False,
+        verbose: bool = False,
     ):
         args = ["git", "fetch"]
 
         if repository and all:
             raise ValueError("Cannot set both 'repository' and 'all'")
+        
+        if quiet and verbose:
+            raise ValueError("Cannot set both 'quiet' and 'verbose'")
 
         if all:
             args.append("-a")
@@ -166,6 +171,10 @@ class GitRepo:
             args.append("--refetch")
         if tags:
             args.append("-t")
+        if quiet:
+            args.append("--quiet")
+        if verbose:
+            args.append("--verbose")
 
         if repository:
             args.append(repository)
@@ -181,58 +190,93 @@ class GitRepo:
         try:
             proc = self.run(args)
         except subprocess.CalledProcessError as e:
-            log.error("Failed to fetch %s of '%s'.\n%s", l_repository, self.path, e.stderr)
+            log.error("(%s) Failed to fetch %s (%d).\n%s", self.name, l_repository, e.returncode, e.stderr)
             raise
 
         self._status = None
 
-        if log.isEnabledFor(logging.DEBUG):
-            stdout = ("\n" + proc.stdout) \
-                if (proc.stdout and proc.stdout.rstrip("\n")) else ""
-            stderr = ("\n" + proc.stderr) \
-                if (proc.stderr and proc.stderr.rstrip("\n")) else ""
-        else:
-            stdout = ""
-            stderr = ""
+        stdout = ("\n" + proc.stdout) \
+            if (proc.stdout and proc.stdout.rstrip("\n")) else ""
+        stderr = ("\n" + proc.stderr) \
+            if (proc.stderr and proc.stderr.rstrip("\n")) else ""
 
-        log.info("Fetched %s of '%s'. %s %s", l_repository, self.path, stdout, stderr)
+        log.info("(%s) Fetched %s. %s %s", self.name, l_repository, stdout, stderr)
 
-    
-    def ff_upstream(self):
-        """Fast-forward merge remote-tracking branch"""
 
-        if not self.is_clean():
-            raise RuntimeError("Cannot fast-forward '{}'. Working tree is not clean.".format(self.path))
-        
-        status = self.status()
-        branch = status.head.branch
-        
-        if branch is None:
-            raise RuntimeError("Cannot fast-forward '{}'. HEAD is detached.".format(self.path))
-
-        if branch.upstream is None:
-            raise RuntimeError("Branch '{}' of '{}' has no remote-tracking branch.".format(branch.name, self.path))
-        
+    def push(self):
         try:
-            proc = self.run(["git", "merge", "--ff-only", branch.upstream])
+            proc = self.run(("git", "push"))
         except subprocess.CalledProcessError as e:
-            log.error("Failed to fast-forward '%s' into '%s' of '%s'.\n%s",
-                      branch.upstream, branch.name, self.path, e.stderr)
+            log.error("(%s) Failed to push (%d). %s", self.name, e.returncode, e.stderr)
+            raise
+
+        stdout = ("\n" + proc.stdout) \
+            if (proc.stdout and proc.stdout.rstrip("\n")) else ""
+        stderr = ("\n" + proc.stderr) \
+            if (proc.stderr and proc.stderr.rstrip("\n")) else ""
+
+        log.info("(%s) Pushed to remote. %s %s", self.name, stdout, stderr)
+        return proc
+    
+    def merge(
+        self,
+        commit: str,
+        *,
+        ff: Optional[bool] = None,
+        ff_only: Optional[bool] = None,
+        message: Optional[str] = None,
+        log_count: Optional[int] = None,
+        quiet: bool = False,
+        verbose: bool = False,
+    ):
+        if ff is not None and ff_only is not None:
+            raise ValueError("Cannot set both ff and ff_only")
+        
+        if not commit:
+            raise ValueError("commit must be specified")
+        
+        if quiet and verbose:
+            raise ValueError("Cannot set both quiet and verbose")
+        
+        args = ["git", "merge"]
+
+        if ff is True:
+            args.append("--ff")
+        elif ff is False:
+            args.append("--no-ff")
+
+        if ff_only is True:
+            args.append("--ff-only")
+
+        if message:
+            args.append("-m")
+            args.append(message)
+
+        if log_count:
+            args.append(f"--log={log_count}")
+
+        if quiet:
+            args.append("--quiet")
+
+        if verbose:
+            args.append("--verbose")
+
+        args.append(commit)
+
+        try:
+            proc = self.run(args)
+        except subprocess.CalledProcessError as e:
+            log.error("(%s) Failed to merge '%s' (%d). %s", self.name, commit, e.returncode, e.stderr)
             raise
 
         self._status = None
 
-        if log.isEnabledFor(logging.DEBUG):
-            stdout = ("\n" + proc.stdout) \
-                if (proc.stdout and proc.stdout.rstrip("\n")) else ""
-            stderr = ("\n" + proc.stderr) \
-                if (proc.stderr and proc.stderr.rstrip("\n")) else ""
-        else:
-            stdout = ""
-            stderr = ""
+        stdout = ("\n" + proc.stdout) \
+            if (proc.stdout and proc.stdout.rstrip("\n")) else ""
+        stderr = ("\n" + proc.stderr) \
+            if (proc.stderr and proc.stderr.rstrip("\n")) else ""
 
-        log.info("Fast-forwarded '%s' into '%s' of '%s'. %s %s",
-                 branch.upstream, branch.name, self.path, stdout, stderr)
+        log.info("(%s) Merged '%s'. %s %s", self.name, commit, stdout, stderr)
 
 
     def is_clean(self) -> bool:
@@ -275,7 +319,7 @@ class GitRepo:
             self.run(["git", "remote", "set-url", name, url])
         except subprocess.CalledProcessError as e:
             if e.returncode == 2:
-                log.error("%s (%s)", e.stderr, self.path)
+                log.error("(%s) %s", self.path, e.stderr)
             raise
 
         self._remotes = None
@@ -415,3 +459,4 @@ class GitRepo:
             log.debug("Subprocess failed (%d) '%s' %s. %s", e.returncode,
                       self.path, args, e.stderr)
             raise
+        

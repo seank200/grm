@@ -3,11 +3,13 @@ import typer
 from .config import configure, app as config_app
 from .exceptions import GrmError
 from .find import app as find_app
+from .sync import app as sync_app
 
 
 app = typer.Typer(callback=configure)
 app.add_typer(config_app)
 app.add_typer(find_app)
+app.add_typer(sync_app)
 
 log = logging.getLogger(__name__)
 
