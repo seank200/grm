@@ -139,7 +139,16 @@ class GitRepo:
             raise ValueError("refspec cannot be empty")
         args.append(branch)
 
-        return self.run(args)
+        try:
+            proc = self.run(args)
+            self._status = None
+        except subprocess.CalledProcessError as e:
+            log.error("('%s') ERROR: Failed to switch to '%s' (%d).\n%s",
+                      self.name, branch, e.returncode, e.stderr)
+            raise
+
+        log.info("('%s') Switched to '%s'", self.name, branch)
+        return proc
     
     def fetch(
         self,
@@ -207,7 +216,7 @@ class GitRepo:
         try:
             proc = self.run(("git", "push"))
         except subprocess.CalledProcessError as e:
-            log.error("(%s) Failed to push (%d). %s", self.name, e.returncode, e.stderr)
+            log.error("(%s) Failed to push (%d).\n%s", self.name, e.returncode, e.stderr)
             raise
 
         stdout = ("\n" + proc.stdout) \

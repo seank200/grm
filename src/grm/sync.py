@@ -7,6 +7,7 @@ from rich.table import Table
 from rich.text import Text
 from typing import Annotated, Optional, Union
 from .config import get_config, get_console
+from .exceptions import InvalidOptionsError
 from .find import find_repos, Matcher
 from .git import GitRepo
 from .utils import max_threads
@@ -108,7 +109,19 @@ def _sync_worker(repo: GitRepo, options: SyncOptions, state: SyncState) -> SyncR
         return result
     
     if status.ahead > 0:
+        branch = status.head.branch
+
         if options.push.enabled:
+            if branch is None:
+                result.push = False
+                result.error = "HEAD is detached"
+                return result
+            
+            if branch.upstream is None:
+                result.push = False
+                result.error = "No remote branch configured"
+                return result
+
             try:
                 repo.push()
 
@@ -119,9 +132,12 @@ def _sync_worker(repo: GitRepo, options: SyncOptions, state: SyncState) -> SyncR
                 return result
         else:
             log.warning("(%s) Not pushing local changes (ahead %d)", repo.name, status.ahead)
+    else:
+        log.debug("(%s) Nothing to push (already up-to-date)", repo.name)
 
     if status.behind > 0:
         branch = status.head.branch
+
         if branch is None:
             result.merge = False
             result.error = "HEAD is detached"
@@ -151,6 +167,8 @@ def _sync_worker(repo: GitRepo, options: SyncOptions, state: SyncState) -> SyncR
                 return result
         else:
             log.warning("(%s) Not merging remote changes (behind %d)", repo.name, status.behind)
+    else:
+        log.debug("(%s) Nothing to merge (already up-to-date)", repo.name)
 
     return result
 
@@ -211,7 +229,7 @@ def cmd_sync(
     merge_message: Annotated[str, typer.Option(
         "-m",
         help="(git-merge) Merge commit message (if one is created)",
-    )] = "Merge remote-tracking branch '{upstream}' into '{branch}'",
+    )] = "",
     merge_log: Annotated[int, typer.Option(
         "--log",
         help="(git-merge) Append one-line descriptions of maximum N commits being merged to the commit message"
@@ -223,12 +241,18 @@ def cmd_sync(
         help="Pass --verbose flags to git-fetch and git-merge",
     )] = False,
     bail: Annotated[bool, typer.Option(
-        "--bail",
+        "--bail/--no-bail",
         help="Abort all unstarted sync operations when a fetch fails (a non-zero exit code from git-fetch)",
     )] = True,
 ):
     if quiet and verbose:
         pass
+
+    if merge_ff is None and merge_ff_only is None:
+        merge_ff_only = True
+
+    if (merge_ff is not None) and not merge_message:
+        raise InvalidOptionsError("Provide a merge commit message (run with --help for usage details)")
 
     config = get_config()
 
@@ -270,7 +294,7 @@ def cmd_sync(
 
     state = SyncState()
 
-    max_workers = max_threads(3 if fetch else 8, len(repos))
+    max_workers = max_threads(4 if fetch else 8, len(repos))
     log.info("Syncing %d repositories with %d workers", len(repos), max_workers)
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         fs = (executor.submit(_sync_worker, repo, options, state)
@@ -289,12 +313,17 @@ def cmd_sync(
     if results:
         results.sort(key=lambda res: str(res.repo.path))
 
-    table = Table(pad_edge=False, box=None, show_header=True, header_style="underline")
+    table = Table(
+        pad_edge=False,
+        box=None,
+        show_header=True,
+        header_style="underline"
+    )
     table.add_column("Name")
     table.add_column("Fetch")
     table.add_column("Push")
     table.add_column("Merge")
-    table.add_column("Result")
+    table.add_column()
 
     for result in results:
         table.add_row(
