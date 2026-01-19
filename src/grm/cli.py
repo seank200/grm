@@ -32,6 +32,5 @@ def main():
         log.critical("command error: %s", e, exc_info=True)
         return 1
 
-    print("program error: command entrypoint not configured", file=sys.stderr)
     parser.print_help()
     return 2

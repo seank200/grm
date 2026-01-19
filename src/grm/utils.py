@@ -2,4 +2,12 @@ import os
 
 
 def max_threads(*args: int):
-    return min(*args, os.cpu_count() or 1)
+    fallback: int = os.cpu_count() or 1
+
+    if fallback > 8:
+        fallback //= 2
+
+    if args:
+        return min(*args, fallback)
+
+    return fallback

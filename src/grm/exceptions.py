@@ -5,7 +5,7 @@ class CommandExit(Exception):
 
 
 class CommandError(CommandExit):
-    MSG_PREFIX = "Command failed: "
+    MSG_PREFIX = "command failed: "
 
     def __init__(self, message: str = "", *args, **kwargs):
         super().__init__(
@@ -17,7 +17,7 @@ class CommandError(CommandExit):
 
 
 class ConfigError(CommandExit):
-    MSG_PREFIX = "Invalid config: "
+    MSG_PREFIX = "invalid config: "
 
     def __init__(self, message: str = "", *args, **kwargs):
         super().__init__(
@@ -29,7 +29,7 @@ class ConfigError(CommandExit):
 
 
 class OptionError(CommandExit):
-    MSG_PREFIX = "Invalid arguments: "
+    MSG_PREFIX = "invalid arguments: "
 
     def __init__(self, message: str = "", *args, **kwargs):
         super().__init__(

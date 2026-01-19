@@ -1,6 +1,13 @@
 import argparse
 
 
+OUTPUT_ABSOLUTE = "absolute"
+OUTPUT_RELATIVE = "relative"
+OUTPUT_RESOLVE = "resolve"
+OUTPUT_URL = "url"
+OUTPUT_LONG = "long"
+
+
 # Global parser object
 parser = argparse.ArgumentParser(
     prog="grm",
@@ -44,16 +51,45 @@ filter_parser.add_argument(
 filter_parser.add_argument(
     "-C", "--case-sensitive",
     action="store_true",
-    help="(filter) perform case-senstivie matches on string filter queries",
+    help="""(filter) perform case-sensitive matches on string filter
+    queries [default: (case-insensitive)]""",
 )
 filter_parser.add_argument(
     "-e", "--exact",
     action="store_true",
     help="""(filter) perform exact string matches on string filter queries,
-    (default: substring match)""",
+    [default: (substring match)]""",
 )
 filter_parser.add_argument(
     "--hidden",
     action="store_true",
     help="(filter) include hidden repositories (names starting with '.')"
+)
+
+render_parser = argparse.ArgumentParser(add_help=False)
+
+output_group = render_parser.add_mutually_exclusive_group()
+output_group.add_argument(
+    "-o", "--output",
+    choices=[
+        OUTPUT_ABSOLUTE,
+        OUTPUT_RELATIVE,
+        OUTPUT_RESOLVE,
+        OUTPUT_URL,
+        OUTPUT_LONG,
+    ],
+    default=OUTPUT_RELATIVE,
+    help=f"""Output format ('{OUTPUT_ABSOLUTE}': absolute local path,
+    '{OUTPUT_RELATIVE}': local path relative to the search directory,
+    '{OUTPUT_RESOLVE}': absolute path with symlink resolution,
+    '{OUTPUT_URL}': all remote URLs,
+    '{OUTPUT_LONG}': long format with current worktree status)
+    [default: '{OUTPUT_RELATIVE}']""",
+)
+output_group.add_argument(
+    "-l",
+    action="store_const",
+    const=OUTPUT_LONG,
+    help=f"Shorthand for setting '--output {OUTPUT_LONG}'",
+    dest="output",
 )

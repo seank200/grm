@@ -19,7 +19,9 @@ class Config:
 
 
 config = Config()
+
 log = logging.getLogger(__name__)
+
 parser = subparsers.add_parser("config", help="Show program config")
 
 ENV_TYPE_ERROR = """Expected environment variable '{}' to be of type '{}',
@@ -105,3 +107,8 @@ def configure(args: argparse.Namespace):
 def cmd_config(args: argparse.Namespace):
     for k, v in asdict(config).items():
         print(k, v, sep="\t")
+
+    if args.debug:
+        print("---")
+        for k, v in vars(args).items():
+            print(k, v, sep="\t")

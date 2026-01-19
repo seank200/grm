@@ -2,6 +2,7 @@ import argparse
 import concurrent.futures
 import logging
 import os
+import pygit2
 import queue
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -9,10 +10,33 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 from .config import config
-from .exceptions import CommandError, OptionError
-from .git import GitRepo
-from .options import subparsers, filter_parser
+from .exceptions import CommandError
+from .options import subparsers, filter_parser, render_parser
+from .render import render_repos
 from .utils import max_threads
+
+
+log = logging.getLogger(__name__)
+
+parser = subparsers.add_parser(
+    "find",
+    parents=[filter_parser, render_parser],
+    description="Recursively search for local repositories",
+    help="Recursively search for local repositories",
+)
+
+parser.add_argument(
+    "path",
+    type=Path,
+    help="directory path to search",
+)
+
+parser.add_argument(
+    "-d", "--depth",
+    default=0,
+    type=int,
+    help="maximum search depth (0 for no recursion limit) [default: 0]"
+)
 
 
 @dataclass
@@ -24,9 +48,16 @@ class FindJob:
 @dataclass
 class FindState:
     jobs: queue.Queue[Optional[Path]]
-    results: list[GitRepo]
+    results: list[pygit2.Repository]
     lock: threading.Lock
     aborted: bool = False
+
+
+@dataclass
+class FindOptions:
+    max_depth: int
+    filter: 'RepoFilter'
+    hidden: bool
 
 
 class RepoFilter:
@@ -56,22 +87,23 @@ class RepoFilter:
         self.case_sensitive = case_sensitive
         self.exact = exact
 
-    def matches(self, repo: GitRepo) -> bool:
+    def matches(self, repo: pygit2.Repository) -> bool:
         return self.matches_name(repo) \
             and self.matches_remote_url(repo)
 
-    def matches_name(self, repo: GitRepo) -> bool:
+    def matches_name(self, repo: pygit2.Repository) -> bool:
         if not self.name:
             return True
 
-        return self._matches_str(self.name, repo.name)
+        return self._matches_str(self.name, Path(repo.workdir).name)
 
-    def matches_remote_url(self, repo: GitRepo) -> bool:
+    def matches_remote_url(self, repo: pygit2.Repository) -> bool:
         if not self.remote_url:
             return True
 
-        remotes = repo.remotes()
-        for url in remotes.values():
+        for remote_name in repo.remotes.names():
+            url = repo.remotes[remote_name].url
+
             if self._matches_str(self.remote_url, url):
                 return True
 
@@ -86,57 +118,14 @@ class RepoFilter:
         return query in _value
 
 
-@dataclass
-class FindOptions:
-    max_depth: int
-    filter: RepoFilter
-    hidden: bool
-
-
-log = logging.getLogger(__name__)
-
-parser = subparsers.add_parser(
-    "find",
-    parents=[filter_parser],
-    description="Recursively search for local repositories",
-    help="Recursively search for local repositories",
-)
-
-parser.add_argument(
-    "path",
-    type=Path,
-    help="directory path to search",
-)
-
-parser.add_argument(
-    "-d", "--depth",
-    default=0,
-    type=int,
-    help="maximum search depth (0: no limit, default: 0)"
-)
-
-OUTPUT_ABSOLUTE = "absolute"
-OUTPUT_RELATIVE = "relative"
-OUTPUT_RESOLVE = "resolve"
-OUTPUT_URL = "url"
-
-parser.add_argument(
-    "-o", "--output",
-    choices=[OUTPUT_ABSOLUTE, OUTPUT_RELATIVE, OUTPUT_RESOLVE, OUTPUT_URL],
-    default="relative",
-    help=f"""Output format ('{OUTPUT_ABSOLUTE}': absolute local path,
-    '{OUTPUT_RELATIVE}': local path relative to the search directory,
-    '{OUTPUT_RESOLVE}': absolute path with symlink resolution,
-    '{OUTPUT_URL}': all remote URLs)""",
-)
-
-
 def _worker_job(job: FindJob, state: FindState, options: FindOptions) -> bool:
-    if job.path.joinpath(".git").is_dir():
-        repo = GitRepo(job.path)
+    repo_path: str = pygit2.discover_repository(job.path)
+
+    if repo_path:
+        repo = pygit2.Repository(repo_path)
 
         if options.filter.matches(repo):
-            log.debug("Found repository '%s'", repo.name)
+            log.debug("Found repository: %s", repo.workdir)
             with state.lock:
                 state.results.append(repo)
 
@@ -159,18 +148,22 @@ def _worker(state: FindState, options: FindOptions):
 
     while True:
         if state.aborted:
-            log.debug("worker %d break: abort signal from main thread")
+            log.debug("worker %d break: abort signal", tid)
             break
 
         try:
-            job = state.jobs.get(timeout=60.0)
+            job = state.jobs.get(timeout=300.0)
         except queue.Empty:
-            log.debug("worker %d break: no jobs")
+            log.debug("worker %d break: no jobs", tid)
             break
 
         if job is None:
-            log.debug("worker %d break: stop signal from main thread")
+            log.debug("worker %d break: stop signal", tid)
             state.jobs.task_done()
+            break
+
+        if state.aborted:
+            log.debug("worker %d break: abort signal", tid)
             break
 
         try:
@@ -202,7 +195,8 @@ def find_repos(
     max_depth: int = 0,
     filter: Optional[RepoFilter] = RepoFilter(),
     hidden: bool = False,
-) -> list[GitRepo]:
+    raise_if_not_found: bool = True,
+) -> list[pygit2.Repository]:
     log.info("Searching for repositories in '%s'...", path.absolute())
 
     options = FindOptions(max_depth, filter, hidden)
@@ -213,7 +207,7 @@ def find_repos(
     )
     state.jobs.put(FindJob(path, 0))
 
-    num_workers = max_threads(6)
+    num_workers = max_threads()
     with ThreadPoolExecutor(max_workers=num_workers) as exec:
         fs = tuple(exec.submit(_worker, state, options)
                    for _ in range(num_workers))
@@ -245,14 +239,15 @@ def find_repos(
 
     matches = len(state.results)
 
-    if matches == 0:
+    if raise_if_not_found and matches == 0:
         raise CommandError(f"No repositories found in '{path.absolute()}'")
 
+    _repositories = "repository" if matches == 1 else "repositories"
     if matches < found:
-        log.info("Found %d repositories in '%s' (total %d)",
+        log.info(f"Found %d {_repositories} in '%s' (total %d)",
                  matches, path.absolute(), found)
     else:
-        log.info("Found %d repositories in '%s'", found, path.absolute())
+        log.info(f"Found %d {_repositories} in '%s'", found, path.absolute())
 
     return state.results
 
@@ -261,29 +256,8 @@ def cmd_find(args: argparse.Namespace):
     repos = find_repos(
         args.path,
         max_depth=args.depth,
-        filter=RepoFilter.create(args)
+        filter=RepoFilter.create(args),
+        raise_if_not_found=False,
     )
 
-    if args.output == OUTPUT_ABSOLUTE:
-        for repo in repos:
-            print(repo.path.absolute())
-        return
-
-    if args.output == OUTPUT_RESOLVE:
-        for repo in repos:
-            print(repo.path.resolve())
-        return
-
-    if args.output == OUTPUT_RELATIVE:
-        for repo in repos:
-            print(repo.path.relative_to(args.path))
-        return
-
-    if args.output == OUTPUT_URL:
-        for repo in repos:
-            remotes = repo.remotes()
-            for url in remotes.values():
-                print(url)
-        return
-
-    raise OptionError(f"Unexpected '--output' value '{args.output}'")
+    render_repos(repos, args)
