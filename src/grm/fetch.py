@@ -254,6 +254,33 @@ def fetch_repos(
         return [f.result() for f in waited_fs.done]
 
 
+def log_fetch_results(results: list[FetchResult]):
+    if log.isEnabledFor(logging.WARNING):
+        results.sort(key=lambda r: r.repo.workdir)
+
+    success_repos = list(r.repo.workdir for r in results if r.success)
+    failed_repos = list(r.repo.workdir for r in results if not r.success)
+
+    total = len(success_repos) + len(failed_repos)
+    success = len(success_repos)
+    failed = len(failed_repos)
+
+    if success_repos:
+        log.debug("fetch: success (%d/%d):\n  - %s",
+                  success, total, "\n  - ".join(success_repos))
+
+    if failed_repos:
+        log.warning("fetch: failed (%d/%d):\n  - %s",
+                    failed, total, "\n  - ".join(failed_repos))
+
+    if failed_repos:
+        log.error("fetch: completed %d (success %d, failed %d)",
+                  total, success, failed)
+    else:
+        log.info("fetch: completed %d (success %d, failed 0)",
+                 total, success)
+
+
 def cmd_fetch(args: argparse.Namespace):
     repos = find_repos(
         args.path,
@@ -268,27 +295,6 @@ def cmd_fetch(args: argparse.Namespace):
         depth=args.fetch_depth,
     )
 
-    results.sort(key=lambda r: r.repo.workdir)
+    log_fetch_results(results)
 
-    success_repos = list(r.repo.workdir for r in results if r.success)
-    failed_repos = list(r.repo.workdir for r in results if not r.success)
-
-    if success_repos:
-        log.info("fetch: success (%d/%d):\n  - %s",
-                 len(success_repos), len(repos), "\n  - ".join(success_repos))
-
-    if failed_repos:
-        log.warning("fetch: failed (%d/%d):\n  - %s",
-                    len(failed_repos), len(repos), "\n  - ".join(failed_repos))
-
-    if failed_repos:
-        log.error("fetch: completed %d (success %d, failed %d)",
-                  len(repos), len(success_repos), len(failed_repos))
-    else:
-        log.info("fetch: completed %d (success %d, failed 0)",
-                 len(repos), len(success_repos))
-
-    if len(failed_repos) > 0:
-        return 1
-
-    return 0
+    return 0 if all(r.success for r in results) else 1
