@@ -244,10 +244,9 @@ def find_repos(
 
     _repositories = "repository" if matches == 1 else "repositories"
     if matches < found:
-        log.info(f"Found %d {_repositories} in '%s' (total %d)",
-                 matches, path.absolute(), found)
+        log.info(f"Found %d {_repositories} (total %d)", matches, found)
     else:
-        log.info(f"Found %d {_repositories} in '%s'", found, path.absolute())
+        log.info(f"Found %d {_repositories}", found)
 
     return state.results
 

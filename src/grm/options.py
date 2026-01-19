@@ -3,7 +3,6 @@ import argparse
 
 OUTPUT_ABSOLUTE = "absolute"
 OUTPUT_RELATIVE = "relative"
-OUTPUT_RESOLVE = "resolve"
 OUTPUT_URL = "url"
 OUTPUT_LONG = "long"
 
@@ -67,21 +66,19 @@ filter_parser.add_argument(
 )
 
 render_parser = argparse.ArgumentParser(add_help=False)
-
+render_parser.set_defaults(path=None)
 output_group = render_parser.add_mutually_exclusive_group()
 output_group.add_argument(
     "-o", "--output",
     choices=[
         OUTPUT_ABSOLUTE,
         OUTPUT_RELATIVE,
-        OUTPUT_RESOLVE,
         OUTPUT_URL,
         OUTPUT_LONG,
     ],
     default=OUTPUT_RELATIVE,
     help=f"""Output format ('{OUTPUT_ABSOLUTE}': absolute local path,
     '{OUTPUT_RELATIVE}': local path relative to the search directory,
-    '{OUTPUT_RESOLVE}': absolute path with symlink resolution,
     '{OUTPUT_URL}': all remote URLs,
     '{OUTPUT_LONG}': long format with current worktree status)
     [default: '{OUTPUT_RELATIVE}']""",
