@@ -9,7 +9,7 @@ class CommandError(CommandExit):
 
     def __init__(self, message: str = "", *args, **kwargs):
         super().__init__(
-            CommandError.MSG_PREFIX + message,
+            message,
             *args,
             returncode=1,
             **kwargs
@@ -21,7 +21,7 @@ class ConfigError(CommandExit):
 
     def __init__(self, message: str = "", *args, **kwargs):
         super().__init__(
-            ConfigError.MSG_PREFIX + message,
+            message,
             *args,
             returncode=2,
             **kwargs,
@@ -33,7 +33,7 @@ class OptionError(CommandExit):
 
     def __init__(self, message: str = "", *args, **kwargs):
         super().__init__(
-            OptionError.MSG_PREFIX + message,
+            message,
             *args,
             returncode=2,
             **kwargs,

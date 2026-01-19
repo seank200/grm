@@ -30,7 +30,7 @@ def main():
         if args.func:
             return args.func(args)
     except CommandExit as e:
-        log.critical("%s", e, exc_info=config.debug)
+        log.critical("command failed: %s", e, exc_info=config.debug)
         return e.returncode
     except Exception as e:
         log.critical("command error: %s", e, exc_info=True)
