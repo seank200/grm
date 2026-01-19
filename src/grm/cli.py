@@ -3,6 +3,7 @@ import sys
 from .config import parser as config_parser, cmd_config, configure, config
 from .exceptions import CommandExit
 from .find import parser as find_parser, cmd_find
+from .ls import parser as ls_parser, cmd_ls
 from .options import parser
 
 
@@ -11,6 +12,7 @@ log = logging.getLogger(__name__)
 parser.set_defaults(func=None)
 config_parser.set_defaults(func=cmd_config)
 find_parser.set_defaults(func=cmd_find)
+ls_parser.set_defaults(func=cmd_ls)
 
 
 def main():
