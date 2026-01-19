@@ -4,6 +4,7 @@ import pygit2
 
 from datetime import datetime
 from pathlib import Path, PurePath
+from pygit2.enums import FileStatus
 from typing import Optional
 
 from .exceptions import CommandError
@@ -16,6 +17,53 @@ from .options import (
 
 
 log = logging.getLogger(__name__)
+
+
+def render_status(repo: pygit2.Repository) -> str:
+    """
+    Render a concise representation of repository status
+
+    "iwuabo"
+    i: index, w: worktree, u: untracked
+    a: ahead, b: behind
+    o: (operation in progress)
+        m: merge, r: rebase, c: cherry-pick, v: revert, b: bisect
+
+    Args:
+        repo: Repository
+
+    Returns:
+        Repository status
+
+    Raises:
+        ValueError if repo is None
+    """
+    if repo is None:
+        raise ValueError("repo cannot be None")
+
+    git_path = Path(repo.path)
+
+    operation = "-"
+    if (git_path / "rebase-merge").is_dir() \
+            or (git_path / "rebase-apply").is_dir():
+        operation = "r"  # rebase
+    elif (git_path / "MERGE_HEAD").is_file():
+        operation = "m"  # merge
+    elif (git_path / "CHERRY_PICK_HEAD").is_file():
+        operation = "c"  # cherry-pick
+    elif (git_path / "REVERT_HEAD").is_file():
+        operation = "v"  # verbose
+    elif (git_path / "BISECT_LOG").is_file():
+        operation = "b"  # bisect
+    elif (git_path / "sequencer").is_dir():
+        operation = "o"  # other sequencer operation
+
+    status = repo.status(untracked_files="normal")
+
+    for flags in status.values():
+        pass
+
+    return f"-----{operation}"
 
 
 def render_repos(
