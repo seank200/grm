@@ -1,199 +1,107 @@
+import argparse
 import logging
+import os
 import sys
-import typer
 from dataclasses import dataclass, asdict
-from pathlib import PurePath, Path
-from rich import print as rich_print
-from rich.console import Console
-from rich.logging import RichHandler
-from rich.table import Table
-from rich.text import Text
-from typing import Annotated, Optional
+from pathlib import Path
+from typing import Type
+from .exceptions import ConfigError
+from .options import subparsers
 
 
-app = typer.Typer()
+@dataclass
+class Config:
+    verbose: bool = False
+    quiet: bool = False
+    debug: bool = False
+    no_env: bool = False
+    """Ignore OS environment variables"""
+
+
+config = Config()
 log = logging.getLogger(__name__)
+parser = subparsers.add_parser("config", help="Show program config")
+
+ENV_TYPE_ERROR = """Expected environment variable '{}' to be of type '{}',
+but instead got value '{}'."""
 
 
-@dataclass
-class AppConfig:
-    find_path: Path
-    find_max_depth: int
+def envvar(key: str, value_type: Type[str | int | float | bool | Path] = str):
+    if config.no_env:
+        return None
 
-    query_name: Optional[str]
-    query_remote_name: Optional[str]
-    query_remote_url: Optional[str]
-    query_clean: Optional[bool]
-    matcher_case_sensitive: bool
-    matcher_exact: bool
+    value = os.environ.get(key)
 
-    include_hidden: bool
-    debug: bool
-    color: Optional[bool]
+    if value is None:
+        return False if value_type is bool else None
 
+    if value_type is bool:
+        return value.lower() in ("1", "true")
 
-@dataclass
-class AppState:
-    console_out: Console
-    console_err: Console
+    if value_type is int:
+        try:
+            return int(value)
+        except ValueError:
+            raise ConfigError(ENV_TYPE_ERROR.format(key, 'int', value))
 
+    if value_type is Path:
+        try:
+            return Path(value_type)
+        except TypeError:
+            raise ConfigError(ENV_TYPE_ERROR.format(key, 'Path', value))
 
-config: Optional[AppConfig] = None
-state: Optional[AppState] = None
+    if value_type is float:
+        try:
+            return float(value)
+        except ValueError:
+            raise ConfigError(ENV_TYPE_ERROR.format(key, 'float', value))
 
-
-def get_config() -> AppConfig:
-    global config
-
-    if config is None:
-        raise RuntimeError("Application not configured")
-
-    return config
+    # value_type is str. return as-is.
+    return value
 
 
-def get_state() -> AppState:
-    global state
+def configure(args: argparse.Namespace):
+    if args.no_env:
+        config.no_env = True
 
-    if state is None:
-        raise RuntimeError("Application not initialized")
-    
-    return state
+    if args.quiet:
+        config.quiet = True
+    elif envvar("GRM_QUIET", bool):
+        config.quiet = True
 
+    if args.verbose:
+        config.verbose = True
+    elif not config.quiet and envvar("GRM_VERBOSE", bool):
+        config.verbose = True
 
-def get_console(stderr: bool = False) -> Console:
-    state = get_state()
-    return state.console_err if stderr else state.console_out
+    if args.debug:
+        config.debug = True
+    elif not config.quiet and envvar("GRM_DEBUG", bool):
+        config.debug = True
 
+    if config.quiet:
+        level = logging.ERROR
+        fmt = "%(levelname)s: %(message)s"
+    elif config.debug:
+        level = logging.DEBUG
+        fmt = "%(asctime)s %(levelname)s [%(name)s] -- %(message)s"
+    elif config.verbose:
+        level = logging.DEBUG
+        fmt = "%(name)s: %(message)s"
+    else:
+        level = logging.INFO
+        fmt = "%(message)s"
 
-def configure(
-    find_path: Annotated[Path, typer.Option(
-        "-p", "--path",
-        envvar="GRM_FIND_PATH",
-        exists=True,
-        file_okay=False,
-        dir_okay=True,
-        default_factory=Path.cwd,
-        show_default="Current directory",
-        help="Repository search root path",
-    )],
-    find_max_depth: Annotated[int, typer.Option(
-        "-d", "--depth",
-        envvar="GRM_FIND_MAX_DEPTH",
-        help="Repository search depth",
-    )] = 1,
-    query_name: Annotated[Optional[str], typer.Option(
-        "-n", "--name",
-        help="(Search condition) Repository path basename",
-    )] = None,
-    query_remote_name: Annotated[Optional[str], typer.Option(
-        "-r", "--remote",
-        help="(Search condition) Repository remote name (e.g. 'origin')",
-    )] = None,
-    query_remote_url: Annotated[Optional[str], typer.Option(
-        "-u", "--url",
-        help="(Search condition) Repository remote url",
-    )] = None,
-    query_clean: Annotated[Optional[bool], typer.Option(
-        "--clean/--dirty",
-        help="(Search condition) Whether working tree contains/does not contain uncommitted changes to tracked files",
-    )] = None,
-    matcher_case_sensitive: Annotated[bool, typer.Option(
-        "-C", "--case-sensitive",
-        envvar="GRM_MATCHER_CASE_SENSITIVE",
-        help="Case sensitive search query",
-    )] = False,
-    matcher_exact: Annotated[bool, typer.Option(
-        "-e", "--exact", 
-        envvar="GRM_MATCHER_EXACT",
-        help="Perform an exact match of search query (default: substring match)",
-    )] = False,
-    include_hidden: Annotated[bool, typer.Option(
-        "-a", "--all",
-        envvar="GRM_INCLUDE_HIDDEN",
-        help="Include hidden repositories (repository name starting with '.') and repositories contained in hidden directories",
-    )] = False,
-    debug: Annotated[bool, typer.Option(
-        "--debug",
-        envvar="GRM_DEBUG",
-        help="Output verbose logs for debugging",
-    )] = False,
-    color: Annotated[Optional[bool], typer.Option(
-        envvar="GRM_COLOR",
-        help="Always enable/disable color (default: enabled when output is an interactive terminal)",
-    )] = None,
-):
-    global config, state
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(logging.Formatter(fmt=fmt))
 
-    config = AppConfig(
-        find_path=find_path.expanduser(),
-        find_max_depth=find_max_depth,
-        query_name=query_name,
-        query_remote_name=query_remote_name,
-        query_remote_url=query_remote_url,
-        query_clean=query_clean,
-        matcher_case_sensitive=matcher_case_sensitive,
-        matcher_exact=matcher_exact,
-        include_hidden=include_hidden,
-        debug=debug,
-        color=color,
-    )
+    logger = logging.getLogger(__name__.split(".", 1)[0])
+    logger.setLevel(level)
+    logger.addHandler(handler)
 
-    state = AppState(
-        console_out=Console(
-            no_color=(None if color is None else (not color)),
-        ),
-        console_err=Console(
-            stderr=True,
-            no_color=(None if color is None else (not color)),
-        ),
-    )
-
-    pkg_log = logging.getLogger("grm")
-    
-    handler = RichHandler(
-        show_time=debug,
-        omit_repeated_times=False,
-        show_level=debug,
-        show_path=False,
-        log_time_format="%Y-%m-%d %H:%M:%S",
-        console=state.console_err,
-    )
-
-    if debug:
-        handler.setFormatter(logging.Formatter(fmt="%(name)s: %(message)s"))
-    
-    pkg_log.addHandler(handler)
-    pkg_log.setLevel(logging.DEBUG if debug else logging.INFO)
-
-    log.debug("Application args: %s, cwd: %s", sys.argv, Path.cwd())
+    log.debug("application args: %s", vars(args))
 
 
-@app.command("config", help="Output current configuration")
-def cmd_config():
-    table = Table(pad_edge=False, box=None, show_header=False)
-    table.add_column(style="bold")
-    table.add_column()
-
-    for k, v in asdict(get_config()).items():
-        if v is None:
-            _v = Text("None", style="dim")
-        elif type(v) == bool:
-            _v = Text(str(v), style="red")
-        elif type(v) == str:
-            _v = Text(f"'{v}'", style="green")
-        elif type(v) == int or type(v) == float:
-            _v = Text(str(v), style="cyan")
-        elif isinstance(v, PurePath):
-            _v = Text(str(v), style="magenta")
-        else:
-            _v = Text(str(v))
-
-        table.add_row(k, _v)
-
-    rich_print(table)
-
-
-@app.command("path", help="Output repository search path")
-def cmd_path():
-    config = get_config()
-    print(config.find_path)
+def cmd_config(args: argparse.Namespace):
+    for k, v in asdict(config).items():
+        print(k, v, sep="\t")

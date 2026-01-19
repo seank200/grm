@@ -1,30 +1,37 @@
 import logging
-import typer
-from .config import configure, app as config_app
-from .exceptions import GrmError
-from .find import app as find_app
-from .switch import app as switch_app
-from .sync import app as sync_app
+import sys
+from .config import parser as config_parser, cmd_config, configure, config
+from .exceptions import CommandExit
+from .find import parser as find_parser, cmd_find
+from .options import parser
 
-
-app = typer.Typer(callback=configure)
-app.add_typer(config_app)
-app.add_typer(find_app)
-app.add_typer(switch_app)
-app.add_typer(sync_app)
 
 log = logging.getLogger(__name__)
 
+parser.set_defaults(func=None)
+config_parser.set_defaults(func=cmd_config)
+find_parser.set_defaults(func=cmd_find)
+
 
 def main():
+    args = parser.parse_args()
+
     try:
-        app()
-        return 0
-    except KeyboardInterrupt:
-        print()
-    except GrmError as e:
-        log.critical("Command failed: %s", e)
-        return e.exit_code
+        configure(args)
+    except CommandExit as e:
+        print(f"command error: {e}", file=sys.stderr)
+        return e.returncode
+
+    try:
+        if args.func:
+            return args.func(args)
+    except CommandExit as e:
+        log.critical("%s", e, exc_info=config.debug)
+        return e.returncode
     except Exception as e:
-        log.critical("Command error: %s", e, exc_info=True)
-    return 1
+        log.critical("command error: %s", e, exc_info=True)
+        return 1
+
+    print("program error: command entrypoint not configured", file=sys.stderr)
+    parser.print_help()
+    return 2
