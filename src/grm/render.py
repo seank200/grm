@@ -3,7 +3,8 @@ import logging
 import pygit2
 
 from datetime import datetime
-from pathlib import PurePath
+from pathlib import Path, PurePath
+from typing import Optional
 
 from .exceptions import CommandError
 from .options import (
@@ -27,12 +28,17 @@ def render_repos(
 
     repos.sort(key=lambda repo: repo.workdir)
 
+    base_path: Optional[Path] = None
+    if args.path:
+        base_path = args.path if args.path.is_absolute() \
+            else args.path.resolve()
+
     if args.output == OUTPUT_RELATIVE:
-        if not args.path:
+        if base_path is None:
             raise CommandError("Cannot render relative paths without a base")
 
         for repo in repos:
-            print(PurePath(repo.workdir).relative_to(args.path))
+            print(PurePath(repo.workdir).relative_to(base_path))
         return
 
     if args.output == OUTPUT_URL:
@@ -44,11 +50,11 @@ def render_repos(
     if args.output == OUTPUT_LONG:
         now = datetime.now()
 
-        if not args.path:
+        if base_path is None:
             raise CommandError("Cannot render relative paths without a base")
 
         for repo in repos:
-            f_path = PurePath(repo.workdir).relative_to(args.path)
+            f_path = PurePath(repo.workdir).relative_to(base_path)
             f_time = now.strftime("%b %d %H:%M")
             print(f"------ main origin/main {f_time}  {f_path}")
 
