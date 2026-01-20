@@ -125,7 +125,6 @@ def _worker_job(job: FindJob, state: FindState, options: FindOptions) -> bool:
         repo = pygit2.Repository(repo_path)
 
         if options.filter.matches(repo):
-            log.debug("Found repository: %s", repo.workdir)
             with state.lock:
                 state.results.append(repo)
 
@@ -148,22 +147,21 @@ def _worker(state: FindState, options: FindOptions):
 
     while True:
         if state.aborted:
-            log.debug("worker %d break: abort signal", tid)
+            log.debug("find: worker %d break: abort signal", tid)
             break
 
         try:
             job = state.jobs.get(timeout=300.0)
         except queue.Empty:
-            log.debug("worker %d break: no jobs", tid)
+            log.debug("find: worker %d break: no jobs", tid)
             break
 
         if job is None:
-            log.debug("worker %d break: stop signal", tid)
             state.jobs.task_done()
             break
 
         if state.aborted:
-            log.debug("worker %d break: abort signal", tid)
+            log.debug("find: worker %d break: abort signal", tid)
             break
 
         try:
@@ -171,21 +169,21 @@ def _worker(state: FindState, options: FindOptions):
             if is_repo:
                 found += 1
         except FileNotFoundError:
-            log.debug("Path not found: %s", job.path)
+            log.debug("find: path not found: %s", job.path)
         except NotADirectoryError:
-            log.debug("Invalid path: %s", job.path)
+            log.debug("find: invalid path: %s", job.path)
         except PermissionError:
-            log.error("No permission to search '%s'", job.path)
+            log.error("find: error: no permission to search '%s'", job.path)
         except TimeoutError:
-            log.error("Directory read timeout on '%s'", job.path)
+            log.error("find: error: directory read timeout on '%s'", job.path)
         except OSError as e:
-            log.error("Failed to search '%s': %s", job.path, e,
+            log.error("find: error: failed to search '%s': %s", job.path, e,
                       exc_info=config.debug)
         finally:
             visited += 1
             state.jobs.task_done()
 
-    log.debug("worker %d terminating (visited %d, found %d)",
+    log.debug("find: worker %d terminating (visited %d, found %d)",
               tid, visited, found)
     return found
 
@@ -197,7 +195,6 @@ def find_repos(
     hidden: bool = False,
     raise_if_not_found: bool = True,
 ) -> list[pygit2.Repository]:
-    log.info("Searching for repositories in '%s'...", path.absolute())
 
     options = FindOptions(max_depth, filter, hidden)
     state = FindState(
@@ -209,13 +206,16 @@ def find_repos(
 
     num_workers = max_threads()
     with ThreadPoolExecutor(max_workers=num_workers) as exec:
+        log.info("find: Searching for repositories in '%s'... (%d threads)",
+                 path.resolve(), num_workers)
+
         fs = tuple(exec.submit(_worker, state, options)
                    for _ in range(num_workers))
 
         try:
             state.jobs.join()
         except KeyboardInterrupt:
-            log.warning("Aborting")
+            log.warning("find: Aborting")
             state.aborted = True
             raise
 
@@ -230,7 +230,7 @@ def find_repos(
 
         waited_fs = concurrent.futures.wait(fs, timeout=10.0)
         if len(waited_fs.done) < len(waited_fs.not_done):
-            log.warning("WARNING: Not waiting for workers that took"
+            log.warning("find: warning: Not waiting for workers that took"
                         " too long to terminate")
 
         found = 0
@@ -244,9 +244,9 @@ def find_repos(
 
     _repositories = "repository" if matches == 1 else "repositories"
     if matches < found:
-        log.info(f"Found %d {_repositories} (total %d)", matches, found)
+        log.info(f"find: Found %d {_repositories} (total %d)", matches, found)
     else:
-        log.info(f"Found %d {_repositories}", found)
+        log.info(f"find: Found %d {_repositories}", found)
 
     return state.results
 

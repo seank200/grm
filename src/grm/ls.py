@@ -3,14 +3,15 @@ import argparse
 from pathlib import Path
 
 from .find import find_repos
-from .options import subparsers, render_parser
+from .options import subparsers, render_parser, EPILOG_LONG
 from .render import render_repos
 
 
 parser = subparsers.add_parser(
     "ls",
-    parents=[render_parser],
     description="List repositories in a directory",
+    epilog=EPILOG_LONG,
+    parents=[render_parser],
     help="List repositories in a directory",
 )
 

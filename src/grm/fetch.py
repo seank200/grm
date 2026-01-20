@@ -246,7 +246,7 @@ def fetch_repos(
         try:
             waited_fs = concurrent.futures.wait(fs, timeout=300.0)
         except KeyboardInterrupt:
-            log.warning("Aborting fetch")
+            log.warning("fetch: Aborting")
             for f in fs:
                 f.cancel()
             raise

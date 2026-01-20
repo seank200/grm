@@ -89,7 +89,7 @@ def configure(args: argparse.Namespace):
         fmt = "%(asctime)s  %(levelname)s [%(name)s] -- %(message)s"
     elif config.verbose:
         level = logging.DEBUG
-        fmt = "%(name)s: %(message)s"
+        fmt = "%(message)s"
     else:
         level = logging.INFO
         fmt = "%(message)s"
