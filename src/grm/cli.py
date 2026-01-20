@@ -6,6 +6,7 @@ from .fetch import parser as fetch_parser, cmd_fetch
 from .find import parser as find_parser, cmd_find
 from .ls import parser as ls_parser, cmd_ls
 from .options import parser
+from .sync import parser as sync_parser, cmd_sync
 
 
 log = logging.getLogger(__name__)
@@ -15,6 +16,7 @@ config_parser.set_defaults(func=cmd_config)
 fetch_parser.set_defaults(func=cmd_fetch)
 find_parser.set_defaults(func=cmd_find)
 ls_parser.set_defaults(func=cmd_ls)
+sync_parser.set_defaults(func=cmd_sync)
 
 
 def main():
