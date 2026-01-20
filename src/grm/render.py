@@ -119,7 +119,11 @@ def render_sequencer(repo: pygit2.Repository) -> str:
     return sequencer
 
 
-def render_status(repo: pygit2.Repository, head: pygit2.Reference, head_obj: pygit2.Object):
+def render_status(
+    repo: pygit2.Repository,
+    head: pygit2.Reference,
+    head_obj: pygit2.Object
+):
     """
     Render the status of the current working tree. This method calls
     `pygit2.Repository.status`, which takes a long time to complete.
@@ -134,6 +138,10 @@ def render_status(repo: pygit2.Repository, head: pygit2.Reference, head_obj: pyg
     """
 
     rendered = RenderedRepo()
+
+    if repo.head_is_unborn:
+        # no commits yet
+        return rendered
 
     for flags in repo.status(untracked_files="normal").values():
         if bool(flags & FileStatus.CONFLICTED):
@@ -154,7 +162,7 @@ def render_status(repo: pygit2.Repository, head: pygit2.Reference, head_obj: pyg
         if branch:
             rendered.head = branch.branch_name
             upstream = branch.upstream
-            
+
             if upstream:
                 rendered.upstream = upstream.branch_name
                 upstream_oid = repo.references[branch.upstream_name].target

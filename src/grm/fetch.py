@@ -178,7 +178,7 @@ def _worker(repo: pygit2.Repository, options: FetchOptions) -> FetchResult:
     if options.remote_name:
         remote = repo.remotes.get()
         if remote is None:
-            log.warning("fetch: %s: Remote '%s' was not found",
+            log.warning("fetch: %s: warning: Remote '%s' was not found",
                         repo.workdir, options.remote_name)
 
             return FetchResult(repo=repo, success=False)
@@ -189,7 +189,7 @@ def _worker(repo: pygit2.Repository, options: FetchOptions) -> FetchResult:
 
     success = True
     for remote in remotes:
-        log.info("fetch: %s: fetching '%s'", repo.workdir, remote.name)
+        log.info("fetch: %s: Fetching '%s'", repo.workdir, remote.name)
 
         prune = FetchPrune.PRUNE if options.prune else FetchPrune.UNSPECIFIED
         try:
@@ -199,11 +199,11 @@ def _worker(repo: pygit2.Repository, options: FetchOptions) -> FetchResult:
                 depth=options.depth,
             )
         except pygit2.GitError as e:
-            log.error("fetch: %s: failed to fetch '%s'. %s",
+            log.error("fetch: %s: error: Failed to fetch '%s'. %s",
                       repo.workdir, remote.name, e, exc_info=True)
             success = False
         except CommandError as e:
-            log.error("fetch: %s: unable to fetch '%s'. %s",
+            log.error("fetch: %s: error: Unable to fetch '%s'. %s",
                       repo.workdir, remote.name, e)
             success = False
 

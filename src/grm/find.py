@@ -28,7 +28,7 @@ parser = subparsers.add_parser(
 parser.add_argument(
     "path",
     type=Path,
-    help="repository search path [default: current working directory]",
+    help="repository search path",
 )
 
 parser.add_argument(
