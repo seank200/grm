@@ -6,6 +6,7 @@ from pathlib import Path
 from pygit2.enums import MergeFlag, MergeAnalysis, MergePreference
 from typing import Optional
 
+from .fetch import fetch_repos
 from .find import RepoFilter, find_repos
 from .options import subparsers, filter_parser
 
@@ -37,7 +38,29 @@ parser.add_argument(
     "-d", "--depth",
     default=1,
     type=int,
-    help="maximum search depth (0 for no recursion limit) [default: 0]"
+    help="maximum search depth [default: 0 (no limit)]"
+)
+
+parser.add_argument(
+    "--fetch-depth",
+    default=0,
+    type=int,
+    help="Number of commits from the tip of each remote branch history "
+         "to fetch [default: 0 (all history is fetched)]",
+)
+
+parser.add_argument(
+    "--remote",
+    default="",
+    help="name of remote to fetch (e.g. 'origin') [default: '' (fetch"
+    " all repositories)]",
+    dest="remote_name",
+)
+
+parser.add_argument(
+    "--prune",
+    action="store_true",
+    help="Prune branches that no longer exist in remote",
 )
 
 
@@ -104,6 +127,7 @@ def merge(
     repo: pygit2.Repository,
     ff_only: bool,
 ) -> tuple[pygit2.Repository, bool]:
+    """Merge upstream remote-tracking branch to HEAD"""
     if repo.head_is_detached:
         log.error("merge: %s: error: Not merging. HEAD is detached.",
                   repo.workdir)
@@ -164,6 +188,30 @@ def merge(
     return repo, True
 
 
+def merge_repos(repos: list[pygit2.Repository], ff_only: bool = True):
+    results = list(merge(repo, ff_only) for repo in repos)
+
+    success_repos = [repo for repo, success in results if success]
+    failed_repos = [repo for repo, success in results if not success]
+
+    if success_repos and log.isEnabledFor(logging.INFO):
+        log.debug("merge: success (%d/%d):\n  - %s",
+                  len(success_repos), len(results),
+                  "\n  - ".join(r.workdir for r in success_repos))
+
+    if failed_repos and log.isEnabledFor(logging.ERROR):
+        log.error("merge: failed (%d/%d):\n  - %s",
+                  len(failed_repos), len(results),
+                  "\n  - ".join(r.workdir for r in failed_repos))
+
+    if failed_repos:
+        log.error("merge: completed %d (success %d, failed %d)",
+                  len(results), len(success_repos), len(failed_repos))
+    else:
+        log.info("merge: completed %d (success %d, failed 0)",
+                 len(results), len(success_repos))
+
+
 def cmd_sync(args: argparse.Namespace):
     repos = find_repos(
         args.path,
@@ -171,5 +219,11 @@ def cmd_sync(args: argparse.Namespace):
         filter=RepoFilter.create(args),
     )
 
-    # for repo in repos:
-    #     merge(repo, args.ff_only)
+    fetch_repos(
+        repos,
+        remote_name=args.remote_name,
+        prune=args.prune,
+        depth=args.fetch_depth,
+    )
+
+    merge_repos(repos, ff_only=args.ff_only)

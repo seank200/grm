@@ -155,7 +155,7 @@ def render_status(
             rendered.status.w = "w"
 
     if repo.head_is_detached:
-        rendered.head = str(head_obj)[:8]
+        rendered.head = str(head_obj.id)[:8]
         rendered.status.d = "d"
     else:
         branch = repo.branches.get(head.shorthand)
@@ -197,7 +197,12 @@ def render_repo_long(
     if repo is None:
         raise ValueError("repo cannot be None")
 
-    head = repo.head
+    try:
+        head = repo.head
+    except pygit2.GitError as e:
+        log.warning("render: %s: error: %s", repo.workdir, e)
+        return RenderedRepo(path=render_path(repo, base_path))
+
     head_obj = repo.get(head.target)
 
     rendered = render_status(repo, head, head_obj)  # slow
@@ -233,8 +238,13 @@ def render_repos_long(
             raise
 
         if log.isEnabledFor(logging.DEBUG):
-            log.debug("render: cached memory: %dB/%dB",
-                      *pygit2.option(pygit2.GIT_OPT_GET_CACHED_MEMORY))
+            cache_used, cache_size = \
+                pygit2.option(pygit2.GIT_OPT_GET_CACHED_MEMORY)
+            cache_used /= 1024
+            cache_size /= 1024
+            usage = cache_used / cache_size * 100
+            log.debug("render: cached memory: %.2f KB/%.2f KB (%.2f %%)",
+                      cache_used, cache_size, usage)
 
         results = [f.result() for f in waited_fs.done]
 

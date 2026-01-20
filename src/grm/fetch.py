@@ -210,6 +210,33 @@ def _worker(repo: pygit2.Repository, options: FetchOptions) -> FetchResult:
     return FetchResult(repo, success)
 
 
+def log_fetch_results(results: list[FetchResult]):
+    if log.isEnabledFor(logging.WARNING):
+        results.sort(key=lambda r: r.repo.workdir)
+
+    success_repos = list(r.repo.workdir for r in results if r.success)
+    failed_repos = list(r.repo.workdir for r in results if not r.success)
+
+    total = len(success_repos) + len(failed_repos)
+    success = len(success_repos)
+    failed = len(failed_repos)
+
+    if success_repos:
+        log.debug("fetch: success (%d/%d):\n  - %s",
+                  success, total, "\n  - ".join(success_repos))
+
+    if failed_repos:
+        log.warning("fetch: failed (%d/%d):\n  - %s",
+                    failed, total, "\n  - ".join(failed_repos))
+
+    if failed_repos:
+        log.error("fetch: completed %d (success %d, failed %d)",
+                  total, success, failed)
+    else:
+        log.info("fetch: completed %d (success %d, failed 0)",
+                 total, success)
+
+
 def fetch_repos(
     repos: Collection[pygit2.Repository],
     remote_name: str = "",
@@ -251,34 +278,11 @@ def fetch_repos(
                 f.cancel()
             raise
 
-        return [f.result() for f in waited_fs.done]
+        results = [f.result() for f in waited_fs.done]
 
+    log_fetch_results(results)
 
-def log_fetch_results(results: list[FetchResult]):
-    if log.isEnabledFor(logging.WARNING):
-        results.sort(key=lambda r: r.repo.workdir)
-
-    success_repos = list(r.repo.workdir for r in results if r.success)
-    failed_repos = list(r.repo.workdir for r in results if not r.success)
-
-    total = len(success_repos) + len(failed_repos)
-    success = len(success_repos)
-    failed = len(failed_repos)
-
-    if success_repos:
-        log.debug("fetch: success (%d/%d):\n  - %s",
-                  success, total, "\n  - ".join(success_repos))
-
-    if failed_repos:
-        log.warning("fetch: failed (%d/%d):\n  - %s",
-                    failed, total, "\n  - ".join(failed_repos))
-
-    if failed_repos:
-        log.error("fetch: completed %d (success %d, failed %d)",
-                  total, success, failed)
-    else:
-        log.info("fetch: completed %d (success %d, failed 0)",
-                 total, success)
+    return results
 
 
 def cmd_fetch(args: argparse.Namespace):
@@ -294,7 +298,5 @@ def cmd_fetch(args: argparse.Namespace):
         prune=args.prune,
         depth=args.fetch_depth,
     )
-
-    log_fetch_results(results)
 
     return 0 if all(r.success for r in results) else 1
