@@ -99,9 +99,11 @@ class FindFilter:
             return query == _value
 
         return query in _value
-    
 
-def _worker_job(job: FindJob, state: FindState, options: FindOptions) -> Optional[pygit2.Repository]:
+
+def _worker_job(
+    job: FindJob, state: FindState, options: FindOptions
+) -> Optional[pygit2.Repository]:
     if options.hidden or not job.path.name.startswith("."):
         if state.aborted:
             return None
@@ -119,7 +121,7 @@ def _worker_job(job: FindJob, state: FindState, options: FindOptions) -> Optiona
         if options.filter.matches(repo):
             log.debug("find: Found repository %s", job.path)
             return repo
-        
+
     elif options.max_depth <= 0 or job.depth < options.max_depth:
         with os.scandir(job.path) as it:
             for entry in it:
@@ -130,7 +132,7 @@ def _worker_job(job: FindJob, state: FindState, options: FindOptions) -> Optiona
                     continue
 
                 if entry.is_dir(follow_symlinks=False):
-                    state.jobs.put_nowait(FindJob(Path(entry.path), job.depth+1))
+                    state.jobs.put_nowait(FindJob(Path(entry.path), job.depth + 1))
 
     return None
 
@@ -198,11 +200,11 @@ def find_repos(
     if not path.is_dir():
         raise ArgValueError(f"'{path}' is not a directory", arg="path")
 
-    if max_depth:
-        log.info("Searching for repositories in '%s' (max depth: %d)", path, max_depth)
+    if max_depth > 0:
+        log.info("Searching for repositories in '%s' (depth: %d)", path, max_depth)
     else:
         log.info("Searching for repositories in '%s'", path)
-    
+
     state = FindState(jobs=queue.Queue())
     state.jobs.put_nowait(FindJob(path, 0))
 
@@ -247,7 +249,7 @@ def find_repos(
 
         if waited_fs.not_done:
             raise CommandError("find: Search result aggregation timed out")
-        
+
         results = [repo for f in waited_fs.done for repo in f.result()]
 
     log.info("Search complete: %d found\n", len(results))

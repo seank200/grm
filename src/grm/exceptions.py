@@ -4,9 +4,22 @@ class CommandError(Exception):
         self.returncode: int = returncode
 
 
+class ProcedureError(CommandError):
+    """
+    Internal procedure error.
+    Raised to abort procedures for a single repository, but to let
+    the program continue work on other repositories
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, returncode=1, **kwargs)
+
+
 class ArgValueError(CommandError):
     @staticmethod
-    def format_message(message, arg: str = "", option: str = "", envvar: str = "") -> str:
+    def format_message(
+        message, arg: str = "", option: str = "", envvar: str = ""
+    ) -> str:
         prefix = "Invalid "
         if arg:
             prefix += f"argument '{arg}': "
@@ -19,10 +32,18 @@ class ArgValueError(CommandError):
 
         return prefix + message
 
-    def __init__(self, message, *args, arg: str = "", option: str = "", envvar: str = "", **kwargs):
+    def __init__(
+        self,
+        message,
+        *args,
+        arg: str = "",
+        option: str = "",
+        envvar: str = "",
+        **kwargs,
+    ):
         super().__init__(
             ArgValueError.format_message(message, arg, option, envvar),
             *args,
             returncode=2,
-            **kwargs
+            **kwargs,
         )

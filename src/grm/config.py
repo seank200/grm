@@ -2,6 +2,7 @@ import argparse
 import logging
 import os
 import sys
+import pygit2
 
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
@@ -39,14 +40,16 @@ parser.set_defaults(cmd=None)
 logging_group = parser.add_mutually_exclusive_group()
 
 logging_group.add_argument(
-    "-q", "--quiet",
+    "-q",
+    "--quiet",
     action="count",
     default=0,
     help="Suppress informational logs",
 )
 
 logging_group.add_argument(
-    "-v", "--verbose",
+    "-v",
+    "--verbose",
     action="store_true",
 )
 
@@ -59,7 +62,6 @@ logging_group.add_argument(
 subparsers = parser.add_subparsers()
 
 config_parser = subparsers.add_parser("config")
-
 
 
 def envvar(key: str, value_type: Type = str):
@@ -82,14 +84,23 @@ def envvar(key: str, value_type: Type = str):
             return float(value)
         except ValueError:
             raise ArgValueError("Not a valid integer", envvar=key)
-        
+
     if value_type is Path:
         try:
             return Path(value)
         except TypeError:
             raise ArgValueError("Not a valid path", envvar=key)
-        
+
     return value_type
+
+
+def relative_workdir(
+    repo: pygit2.Repository,
+) -> Path:
+    path = Path(repo.workdir)
+    if path.is_relative_to(config.base_path):
+        return path.relative_to(config.base_path)
+    return path
 
 
 def configure(args):
@@ -109,7 +120,7 @@ def configure(args):
         config.log_level = logging.DEBUG
 
     if hasattr(args, "path") and isinstance(args.path, Path):
-        config.base_path = args.path
+        config.base_path = args.path.expanduser().resolve()
 
     handler = logging.StreamHandler(sys.stderr)
     handler.setFormatter(logging.Formatter(fmt=fmt))
@@ -117,7 +128,7 @@ def configure(args):
     logger = logging.getLogger(__name__.split(".", 1)[0])  # Package config
     logger.addHandler(handler)
     logger.setLevel(config.log_level)
-    
+
     if config.debug:
         log.debug("command args: %s", vars(args))
 
