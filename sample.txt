@@ -1,0 +1,29 @@
+~ $ grm sync ~/orm --ff-only --prune
+Searching for repositories in '/Users/ywkim/orm' (depth: 2)
+Search complete: 17 found
+
+Sycning 17 repositories
+sync: Checking repository status
+sync: github/system-integration-mgt/: ERROR: Sync failed -- rebase in progress
+
+Fetching 16 repositories
+fetch: github/kt-pa-backend/: Fetching 'origin'
+fetch: github/raas-admin-backend/: Fetching 'origin'
+fetch: github/orm_open_api/: Fetching 'origin'
+fetch: github/smart-pad-backend/: Fetching 'origin'
+fetch: github/scenario-mgt/: Fetching 'origin'
+fetch: github/scenario-runtime-engine/: Fetching 'origin'
+fetch: github/scene-runtime-engine/: Fetching 'origin'
+fetch: github/rm-proxy-conf/: ERROR: Fetch failed -- Remote 'origin' was not found.
+fetch: 1 failed repository: github/rm-proxy-conf/
+Fetch complete: 15 success, 1 failed
+
+Merging 9 repositories (fast-forward only)
+merge: github/kt-pa-backend/: Fast-forwarding origin/dev...dev
+merge: github/kt-pa-backend/: ERROR: Merge failed -- cannot fast-forward 'origin/dev' into 'dev'
+merge: github/raas-admin-backend: ERROR: Merge failed -- conflict between 'origin/dev' and 'dev'
+merge: 2 failed repositories: github/kt-pa-backend/, github/raas-admin-backend/
+Merge complete: 7 success(7 fast-forward, 0 normal), 2 failed 
+
+sync: 3 failed repositories: github/kt-pa-backend/, github/raas-admin-backend/, github/rm-proxy-conf/, github/system-integration-mgt/
+Sync complete: 13 success, 4 failed

@@ -1,42 +1,29 @@
 import logging
-import sys
-from .config import parser as config_parser, cmd_config, configure, config
-from .exceptions import CommandExit
-from .fetch import parser as fetch_parser, cmd_fetch
-from .find import parser as find_parser, cmd_find
-from .ls import parser as ls_parser, cmd_ls
-from .options import parser
-from .sync import parser as sync_parser, cmd_sync
+
+from .config import parser, configure, config_parser, cmd_config
+from .exceptions import CommandError
+from .find import find_parser, cmd_find
 
 
 log = logging.getLogger(__name__)
 
-parser.set_defaults(func=None)
-config_parser.set_defaults(func=cmd_config)
-fetch_parser.set_defaults(func=cmd_fetch)
-find_parser.set_defaults(func=cmd_find)
-ls_parser.set_defaults(func=cmd_ls)
-sync_parser.set_defaults(func=cmd_sync)
+config_parser.set_defaults(cmd=cmd_config)
+find_parser.set_defaults(cmd=cmd_find)
 
 
 def main():
     args = parser.parse_args()
+    configure(args)
 
     try:
-        configure(args)
-    except CommandExit as e:
-        print(f"command error: {e}", file=sys.stderr)
-        return e.returncode
-
-    try:
-        if args.func:
-            return args.func(args)
-    except CommandExit as e:
-        log.critical("command failed: %s", e, exc_info=config.debug)
+        returncode = args.cmd(args)
+        return returncode if returncode else 0
+    except KeyboardInterrupt:
+        log.critical("Command aborted")
+    except CommandError as e:
+        log.critical("ERROR: %s", e)
         return e.returncode
     except Exception as e:
-        log.critical("command error: %s", e, exc_info=True)
-        return 1
+        log.critical("ERROR: %s", e, exc_info=True)
 
-    parser.print_help()
-    return 2
+    return 1

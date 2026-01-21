@@ -5,38 +5,30 @@ import os
 import pygit2
 import queue
 import threading
-from concurrent.futures import ThreadPoolExecutor
+
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Optional
-from .config import config
-from .exceptions import CommandError
-from .options import subparsers, filter_parser, render_parser
-from .render import render_repos
+
+from .config import config, subparsers
+from .exceptions import CommandError, ArgValueError
 from .utils import max_threads
 
 
 log = logging.getLogger(__name__)
 
-parser = subparsers.add_parser(
-    "find",
-    parents=[filter_parser, render_parser],
-    description="Recursively search for local repositories",
-    help="Recursively search for local repositories",
-)
+filter_parser = argparse.ArgumentParser(add_help=False)
+filter_parser.add_argument("-n", "--name")
+filter_parser.add_argument("-u", "--url", dest="remote_url")
+filter_parser.add_argument("-C", "--case-sensitive", action="store_true")
+filter_parser.add_argument("-E", "--exact", action="store_true")
 
-parser.add_argument(
-    "path",
-    type=Path,
-    help="repository search path",
-)
+search_parser = argparse.ArgumentParser(parents=[filter_parser], add_help=False)
+search_parser.add_argument("path", type=Path)
+search_parser.add_argument("-d", "--depth", type=int, default=0)
+search_parser.add_argument("--hidden", action="store_true")
 
-parser.add_argument(
-    "-d", "--depth",
-    default=0,
-    type=int,
-    help="maximum search depth (0 for no recursion limit) [default: 0]"
-)
+find_parser = subparsers.add_parser("find", parents=[search_parser])
 
 
 @dataclass
@@ -47,29 +39,19 @@ class FindJob:
 
 @dataclass
 class FindState:
-    jobs: queue.Queue[Optional[Path]]
-    results: list[pygit2.Repository]
-    lock: threading.Lock
+    jobs: queue.Queue[Optional[FindJob]]
     aborted: bool = False
 
 
 @dataclass
 class FindOptions:
+    path: Path
     max_depth: int
-    filter: 'RepoFilter'
     hidden: bool
+    filter: "FindFilter"
 
 
-class RepoFilter:
-    @staticmethod
-    def create(args: argparse.Namespace) -> 'RepoFilter':
-        return RepoFilter(
-            name=args.name or "",
-            remote_url=args.url or "",
-            case_sensitive=args.case_sensitive,
-            exact=args.exact,
-        )
-
+class FindFilter:
     def __init__(
         self,
         name: str = "",
@@ -77,83 +59,97 @@ class RepoFilter:
         case_sensitive: bool = False,
         exact: bool = False,
     ):
-        if case_sensitive:
-            self.name = name
-            self.remote_url = remote_url
-        else:
-            self.name = name.lower()
-            self.remote_url = remote_url.lower()
-
+        self.name = name if case_sensitive else name.lower()
+        self.remote_url = remote_url if case_sensitive else remote_url.lower()
         self.case_sensitive = case_sensitive
         self.exact = exact
 
     def matches(self, repo: pygit2.Repository) -> bool:
-        return self.matches_name(repo) \
-            and self.matches_remote_url(repo)
+        return self.matches_name(repo) and self.matches_remote_url(repo)
 
     def matches_name(self, repo: pygit2.Repository) -> bool:
         if not self.name:
             return True
 
-        return self._matches_str(self.name, Path(repo.workdir).name)
+        name = PurePath(repo.workdir).name
+        return self.matches_str(self.name, name)
 
     def matches_remote_url(self, repo: pygit2.Repository) -> bool:
         if not self.remote_url:
             return True
 
-        for remote_name in repo.remotes.names():
-            url = repo.remotes[remote_name].url
+        for name in repo.remotes.names():
+            if name is None:
+                continue
 
-            if self._matches_str(self.remote_url, url):
+            url = repo.remotes[name].url
+
+            if url is None:
+                continue
+
+            if self.matches_str(self.remote_url, url):
                 return True
 
         return False
 
-    def _matches_str(self, query: str, value: str) -> bool:
+    def matches_str(self, query: str, value: str):
         _value = value if self.case_sensitive else value.lower()
 
         if self.exact:
             return query == _value
 
         return query in _value
+    
 
+def _worker_job(job: FindJob, state: FindState, options: FindOptions) -> Optional[pygit2.Repository]:
+    if options.hidden or not job.path.name.startswith("."):
+        if state.aborted:
+            return None
 
-def _worker_job(job: FindJob, state: FindState, options: FindOptions) -> bool:
-    repo_path: str = pygit2.discover_repository(job.path)
+        path = pygit2.discover_repository(job.path.joinpath(".git"))
+    else:
+        path = None
 
-    if repo_path:
-        repo = pygit2.Repository(repo_path)
+    if path is not None:
+        repo = pygit2.Repository(path)
+
+        if state.aborted:
+            return None
 
         if options.filter.matches(repo):
-            with state.lock:
-                state.results.append(repo)
-
-        return True
-
+            log.debug("find: Found repository %s", job.path)
+            return repo
+        
     elif options.max_depth <= 0 or job.depth < options.max_depth:
         with os.scandir(job.path) as it:
             for entry in it:
-                if entry.is_dir(follow_symlinks=False) \
-                        and (options.hidden or not entry.name.startswith(".")):
-                    state.jobs.put(FindJob(Path(entry.path), job.depth+1))
+                if state.aborted:
+                    break
 
-    return False
+                if not options.hidden and entry.name.startswith("."):
+                    continue
+
+                if entry.is_dir(follow_symlinks=False):
+                    state.jobs.put_nowait(FindJob(Path(entry.path), job.depth+1))
+
+    return None
 
 
-def _worker(state: FindState, options: FindOptions):
+def _worker(state: FindState, options: FindOptions) -> list[pygit2.Repository]:
     tid = threading.get_native_id()
-    visited = 0
-    found = 0
+    n_visited = 0
+
+    results: list[pygit2.Repository] = []
 
     while True:
         if state.aborted:
-            log.debug("find: worker %d break: abort signal", tid)
+            log.debug("find: thread %d abort")
             break
 
         try:
-            job = state.jobs.get(timeout=300.0)
+            job = state.jobs.get(timeout=60.0)
         except queue.Empty:
-            log.debug("find: worker %d break: no jobs", tid)
+            log.debug("find: thread %d timeout", tid)
             break
 
         if job is None:
@@ -161,102 +157,117 @@ def _worker(state: FindState, options: FindOptions):
             break
 
         if state.aborted:
-            log.debug("find: worker %d break: abort signal", tid)
+            log.debug("find: thread %d abort")
+            state.jobs.task_done()
             break
 
         try:
-            is_repo = _worker_job(job, state, options)
-            if is_repo:
-                found += 1
+            repo = _worker_job(job, state, options)
+            if repo:
+                results.append(repo)
         except FileNotFoundError:
-            log.debug("find: path not found: %s", job.path)
+            if config.debug:
+                log.debug("find: path not found: %s", job.path)
         except NotADirectoryError:
-            log.debug("find: invalid path: %s", job.path)
+            if config.debug:
+                log.debug("find: path invalid: %s", job.path)
         except PermissionError:
-            log.error("find: error: no permission to search '%s'", job.path)
-        except TimeoutError:
-            log.error("find: error: directory read timeout on '%s'", job.path)
+            log.error("find: %s: No permission to search")
         except OSError as e:
-            log.error("find: error: failed to search '%s': %s", job.path, e,
-                      exc_info=config.debug)
+            log.error("find: %s: ERROR: %s", job.path, e)
+        except pygit2.GitError as e:
+            log.error("find: %s: GIT ERROR: %s", job.path, e)
         finally:
-            visited += 1
             state.jobs.task_done()
 
-    log.debug("find: worker %d terminating (visited %d, found %d)",
-              tid, visited, found)
-    return found
+    if config.debug:
+        log.debug("find: worker %d: visited %d, found %d", tid, n_visited, len(results))
+
+    return results
 
 
 def find_repos(
     path: Path,
-    max_depth: int = 0,
-    filter: Optional[RepoFilter] = RepoFilter(),
+    max_depth: int,
     hidden: bool = False,
-    raise_if_not_found: bool = True,
+    name: str = "",
+    remote_url: str = "",
+    case_sensitive: bool = False,
+    exact: bool = False,
 ) -> list[pygit2.Repository]:
+    if not path.is_dir():
+        raise ArgValueError(f"'{path}' is not a directory", arg="path")
 
-    options = FindOptions(max_depth, filter, hidden)
-    state = FindState(
-        jobs=queue.Queue(),
-        results=[],
-        lock=threading.Lock(),
-    )
-    state.jobs.put(FindJob(path, 0))
-
-    num_workers = max_threads()
-    with ThreadPoolExecutor(max_workers=num_workers) as exec:
-        log.info("find: Searching for repositories in '%s'... (%d threads)",
-                 path.resolve(), num_workers)
-
-        fs = tuple(exec.submit(_worker, state, options)
-                   for _ in range(num_workers))
-
-        try:
-            state.jobs.join()
-        except KeyboardInterrupt:
-            log.warning("find: Aborting")
-            state.aborted = True
-            raise
-
-        for _ in range(num_workers):
-            state.jobs.put(None)
-
-        try:
-            state.jobs.join()
-        except KeyboardInterrupt:
-            state.aborted = True
-            raise
-
-        waited_fs = concurrent.futures.wait(fs, timeout=10.0)
-        if len(waited_fs.done) < len(waited_fs.not_done):
-            log.warning("find: warning: Not waiting for workers that took"
-                        " too long to terminate")
-
-        found = 0
-        for f in waited_fs.done:
-            found += f.result()
-
-    matches = len(state.results)
-
-    if raise_if_not_found and matches == 0:
-        raise CommandError(f"No repositories found in '{path.absolute()}'")
-
-    _repositories = "repository" if matches == 1 else "repositories"
-    if matches < found:
-        log.info(f"find: Found %d {_repositories} (total %d)", matches, found)
+    if max_depth:
+        log.info("Searching for repositories in '%s' (max depth: %d)", path, max_depth)
     else:
-        log.info(f"find: Found %d {_repositories}", found)
+        log.info("Searching for repositories in '%s'", path)
+    
+    state = FindState(jobs=queue.Queue())
+    state.jobs.put_nowait(FindJob(path, 0))
 
-    return state.results
+    options = FindOptions(
+        path=path,
+        max_depth=max_depth,
+        hidden=hidden,
+        filter=FindFilter(
+            name=name if name else "",
+            remote_url=remote_url if remote_url else "",
+            case_sensitive=case_sensitive,
+            exact=exact,
+        ),
+    )
+
+    n_thread = max_threads(4)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=n_thread) as exec:
+        fs = tuple(exec.submit(_worker, state, options) for _ in range(n_thread))
+
+        try:
+            state.jobs.join()
+        except KeyboardInterrupt:
+            log.warning("find: Search aborted by user")
+            state.aborted = True
+            raise
+
+        for _ in range(n_thread):
+            state.jobs.put_nowait(None)
+
+        try:
+            state.jobs.join()
+        except KeyboardInterrupt:
+            log.warning("find: Search aborted by user")
+            state.aborted = True
+            raise
+
+        try:
+            waited_fs = concurrent.futures.wait(fs, timeout=30.0)
+        except KeyboardInterrupt:
+            log.warning("find: Search aborted by user")
+            raise
+
+        if waited_fs.not_done:
+            raise CommandError("find: Search result aggregation timed out")
+        
+        results = [repo for f in waited_fs.done for repo in f.result()]
+
+    log.info("Search complete: %d found\n", len(results))
+
+    return results
+
+
+def find_repos_args(args):
+    return find_repos(
+        path=args.path.resolve(),
+        max_depth=args.depth,
+        hidden=args.hidden,
+        name=args.name,
+        remote_url=args.remote_url,
+        case_sensitive=args.case_sensitive,
+        exact=args.exact,
+    )
 
 
 def cmd_find(args: argparse.Namespace):
-    repos = find_repos(
-        args.path,
-        max_depth=args.depth,
-        filter=RepoFilter.create(args),
-        raise_if_not_found=False,
-    )
-
-    render_repos(repos, args)
+    repos = find_repos_args(args)
+    for repo in repos:
+        print(repo.workdir)
