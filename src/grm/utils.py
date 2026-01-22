@@ -2,7 +2,7 @@ import os
 
 
 def max_threads(*args: int) -> int:
-    cpu_count = os.cpu_count() or 1
+    cpu_count = os.cpu_count() or 2
 
     if cpu_count > 8:
         cpu_count //= 2

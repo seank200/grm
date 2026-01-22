@@ -113,14 +113,11 @@ def configure(args):
     if debug:
         config.debug = True
         config.log_level = logging.DEBUG
-        fmt = "%(levelname)s [%(name)s]  %(message)s"
+        fmt = "%(asctime)s  %(levelname)s [%(name)s] -- %(message)s"
     elif quiet:
         config.log_level = LEVELS[min(args.quiet, len(LEVELS))]
     elif verbose:
         config.log_level = logging.DEBUG
-
-    if hasattr(args, "path") and isinstance(args.path, Path):
-        config.base_path = args.path.expanduser().resolve()
 
     handler = logging.StreamHandler(sys.stderr)
     handler.setFormatter(logging.Formatter(fmt=fmt))
@@ -128,6 +125,11 @@ def configure(args):
     logger = logging.getLogger(__name__.split(".", 1)[0])  # Package config
     logger.addHandler(handler)
     logger.setLevel(config.log_level)
+
+    log.debug("path exists: %s", hasattr(args, "path"))
+    if hasattr(args, "path") and isinstance(args.path, Path):
+        config.base_path = args.path.expanduser().resolve()
+        log.debug("base path: %s", config.base_path)
 
     if config.debug:
         log.debug("command args: %s", vars(args))

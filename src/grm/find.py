@@ -12,6 +12,7 @@ from typing import Optional
 
 from .config import config, subparsers
 from .exceptions import CommandError, ArgValueError
+from .render import render_repos, RenderFormat
 from .utils import max_threads
 
 
@@ -29,6 +30,11 @@ search_parser.add_argument("-d", "--depth", type=int, default=0)
 search_parser.add_argument("--hidden", action="store_true")
 
 find_parser = subparsers.add_parser("find", parents=[search_parser])
+find_parser.add_argument("-o", "--output", choices=list(RenderFormat))
+find_parser.add_argument(
+    "--long", action="store_const", const=RenderFormat.LONG, dest="output"
+)
+find_parser.set_defaults(output=RenderFormat.RELATIVE)
 
 
 @dataclass
@@ -227,7 +233,7 @@ def find_repos(
         try:
             state.jobs.join()
         except KeyboardInterrupt:
-            log.warning("find: Search aborted by user")
+            log.warning("find: Aborting")
             state.aborted = True
             raise
 
@@ -237,14 +243,14 @@ def find_repos(
         try:
             state.jobs.join()
         except KeyboardInterrupt:
-            log.warning("find: Search aborted by user")
+            log.warning("find: Aborting")
             state.aborted = True
             raise
 
         try:
             waited_fs = concurrent.futures.wait(fs, timeout=30.0)
         except KeyboardInterrupt:
-            log.warning("find: Search aborted by user")
+            log.warning("find: Aborting")
             raise
 
         if waited_fs.not_done:
@@ -271,5 +277,4 @@ def find_repos_args(args):
 
 def cmd_find(args: argparse.Namespace):
     repos = find_repos_args(args)
-    for repo in repos:
-        print(repo.workdir)
+    render_repos(repos, args.output)
