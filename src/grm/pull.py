@@ -97,7 +97,7 @@ def _merge_upstream_repo(repo: pygit2.Repository, options: MergeOptions):
     analysis, preference = repo.merge_analysis(upstream.target, "HEAD")
 
     if analysis & MergeAnalysis.UP_TO_DATE:
-        log.info(
+        log.debug(
             "merge: %s: '%s' is already up-to-date",
             relative_workdir(repo),
             head.branch_name,
@@ -139,7 +139,7 @@ def _merge_upstream_repo(repo: pygit2.Repository, options: MergeOptions):
 
     if analysis & MergeAnalysis.NORMAL:
         merge_commit: pygit2.Oid = merge_normal(repo, head, upstream)
-        log.debug(
+        log.info(
             "merge: %s: Merged '%s' into '%s' (merge commit: %s)",
             relative_workdir(repo),
             upstream.branch_name,
