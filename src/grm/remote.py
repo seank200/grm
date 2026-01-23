@@ -82,11 +82,9 @@ class RemoteUrl:
             return ""
 
         remote_path = PurePosixPath(self.path)
-        if remote_path.is_absolute():
-            remote_path = remote_path.relative_to("/")
 
         owner = str(remote_path.parent)
-        if owner == ".":
+        if owner == "." or owner == "/":
             return ""
 
         return owner
