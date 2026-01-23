@@ -3,7 +3,13 @@ import enum
 import logging
 import pygit2
 
-from pygit2.enums import MergeAnalysis, MergeFlag, MergePreference
+from pygit2.enums import (
+    FileStatus,
+    MergeAnalysis,
+    MergeFlag,
+    MergePreference,
+    ResetMode,
+)
 from typing import Optional
 
 from .config import subparsers, relative_workdir
@@ -64,13 +70,14 @@ def merge_normal(
         tree,
         [head.target, ref.target],
     )
+    repo.state_cleanup()
     return commit
 
 
 def merge_ff(repo: pygit2.Repository, head: pygit2.Branch, ref: pygit2.Reference):
     reflog_message = f"Fast-forward {ref.target} {head.target}"
-    repo.head.set_target(ref.target, reflog_message)
-    repo.checkout("HEAD")
+    head.set_target(ref.target, reflog_message)
+    repo.reset(ref.target, ResetMode.HARD)
 
 
 def _merge_upstream_repo(repo: pygit2.Repository, options: MergeOptions):
@@ -91,7 +98,7 @@ def _merge_upstream_repo(repo: pygit2.Repository, options: MergeOptions):
     analysis, preference = repo.merge_analysis(upstream.target, "HEAD")
 
     if analysis & MergeAnalysis.UP_TO_DATE:
-        log.debug(
+        log.info(
             "merge: %s: '%s' is already up-to-date",
             relative_workdir(repo),
             head.branch_name,
@@ -110,7 +117,7 @@ def _merge_upstream_repo(repo: pygit2.Repository, options: MergeOptions):
             "Source '{}' is unborn (has no commits yet)".format(head.name)
         )
 
-    if analysis & MergeAnalysis.FASTFORWARD:
+    if analysis & MergeAnalysis.FASTFORWARD and not options & MergeOptions.NO_FF:
         # Fast-forward
         merge_ff(repo, head, upstream)
         log.info(
