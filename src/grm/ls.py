@@ -1,7 +1,5 @@
 import argparse
-import concurrent.futures
 import logging
-import pygit2
 
 from pathlib import Path
 

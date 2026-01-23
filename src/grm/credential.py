@@ -3,9 +3,6 @@ import pygit2
 import subprocess
 import threading
 
-from dataclasses import dataclass
-from urllib.parse import urlparse
-
 from .exceptions import ProcedureError
 from .remote import RemoteUrl
 

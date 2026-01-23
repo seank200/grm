@@ -10,9 +10,9 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import PurePath
 from pygit2.enums import FileStatus
-from typing import Type, Literal
+from typing import Type
 
-from .config import config, relative_dir
+from .config import relative_dir
 from .remote import RemoteUrl
 
 
@@ -233,7 +233,7 @@ def parse_render_options(args: argparse.Namespace) -> RenderOptions:
     return options
 
 
-def render_executor() -> concurrent.futures.Executor:
+def render_executor(max_workers: int) -> concurrent.futures.Executor:
     """
     Determine the best Executor type to use in rendering, depending on
     the number of CPU cores in the machine
@@ -249,7 +249,7 @@ def render_executor() -> concurrent.futures.Executor:
         Executor: Type[concurrent.futures.Executor] = (
             concurrent.futures.ProcessPoolExecutor
         )
-        num_workers = cpu_count // 2 if cpu_count > 8 else cpu_count
+        num_workers = min(cpu_count, max_workers)
         log.debug("render: Rendering with %d processes", num_workers)
 
     return Executor(max_workers=num_workers)
@@ -260,7 +260,7 @@ def render_repos(
 ):
     if options & RenderOptions.LONG:
         log.debug("render: Reading repository index")
-        with render_executor() as executor:
+        with render_executor(len(repos)) as executor:
             fs = tuple(executor.submit(_worker_render, repo.workdir) for repo in repos)
             try:
                 waited_fs = concurrent.futures.wait(fs, timeout=10.0)
