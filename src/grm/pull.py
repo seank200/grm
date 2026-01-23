@@ -4,7 +4,6 @@ import logging
 import pygit2
 
 from pygit2.enums import (
-    FileStatus,
     MergeAnalysis,
     MergeFlag,
     MergePreference,
@@ -140,7 +139,7 @@ def _merge_upstream_repo(repo: pygit2.Repository, options: MergeOptions):
 
     if analysis & MergeAnalysis.NORMAL:
         merge_commit: pygit2.Oid = merge_normal(repo, head, upstream)
-        log.info(
+        log.debug(
             "merge: %s: Merged '%s' into '%s' (merge commit: %s)",
             relative_workdir(repo),
             upstream.branch_name,
@@ -173,7 +172,7 @@ def merge_upstream_repos(repos: list[pygit2.Repository], options: MergeOptions):
     for repo in repos:
         _, success = merge_upstream_repo(repo, options)
         n_success += int(success)
-    log.info("Merge complete: %d success, %d failed\n", n_success, n_total - n_success)
+    log.info("Pull complete: %d success, %d failed\n", n_success, n_total - n_success)
 
 
 def cmd_pull(args: argparse.Namespace):
