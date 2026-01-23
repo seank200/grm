@@ -21,6 +21,7 @@ log = logging.getLogger(__name__)
 filter_parser = argparse.ArgumentParser(add_help=False)
 filter_parser.add_argument("-n", "--name")
 filter_parser.add_argument("-u", "--url", dest="remote_url")
+filter_parser.add_argument("-b", "--branch")
 filter_parser.add_argument("-C", "--case-sensitive", action="store_true")
 filter_parser.add_argument("-E", "--exact", action="store_true")
 
@@ -52,7 +53,7 @@ class FindState:
 @dataclass
 class FindOptions:
     path: Path
-    max_depth: int
+    depth: int
     hidden: bool
     filter: "FindFilter"
 
@@ -60,25 +61,32 @@ class FindOptions:
 class FindFilter:
     def __init__(
         self,
-        name: str = "",
-        remote_url: str = "",
-        case_sensitive: bool = False,
-        exact: bool = False,
+        *,
+        name: str,
+        remote_url: str,
+        branch: str,
+        case_sensitive: bool,
+        exact: bool,
     ):
         self.name = name if case_sensitive else name.lower()
         self.remote_url = remote_url if case_sensitive else remote_url.lower()
+        self.branch = branch if case_sensitive else branch.lower()
         self.case_sensitive = case_sensitive
         self.exact = exact
 
-    def matches(self, repo: pygit2.Repository) -> bool:
-        return self.matches_name(repo) and self.matches_remote_url(repo)
+    def __call__(self, repo: pygit2.Repository) -> bool:
+        return (
+            self.matches_name(repo)
+            and self.matches_remote_url(repo)
+            and self.matches_branch(repo)
+        )
 
     def matches_name(self, repo: pygit2.Repository) -> bool:
         if not self.name:
             return True
 
         name = PurePath(repo.workdir).name
-        return self.matches_str(self.name, name)
+        return self._matches(self.name, name)
 
     def matches_remote_url(self, repo: pygit2.Repository) -> bool:
         if not self.remote_url:
@@ -93,12 +101,21 @@ class FindFilter:
             if url is None:
                 continue
 
-            if self.matches_str(self.remote_url, url):
+            if self._matches(self.remote_url, url):
                 return True
 
         return False
 
-    def matches_str(self, query: str, value: str):
+    def matches_branch(self, repo: pygit2.Repository) -> bool:
+        if not self.branch:
+            return True
+
+        if repo.head_is_unborn or repo.head_is_detached:
+            return False
+
+        return self._matches(self.branch, repo.head.name)
+
+    def _matches(self, query: str, value: str):
         _value = value if self.case_sensitive else value.lower()
 
         if self.exact:
@@ -124,11 +141,11 @@ def _worker_job(
         if state.aborted:
             return None
 
-        if options.filter.matches(repo):
+        if options.filter(repo):
             log.debug("find: Found repository %s", job.path)
             return repo
 
-    elif options.max_depth <= 0 or job.depth < options.max_depth:
+    elif options.depth <= 0 or job.depth < options.depth:
         with os.scandir(job.path) as it:
             for entry in it:
                 if state.aborted:
@@ -196,18 +213,19 @@ def _worker(state: FindState, options: FindOptions) -> list[pygit2.Repository]:
 
 def find_repos(
     path: Path,
-    max_depth: int,
+    depth: int,
     hidden: bool = False,
     name: str = "",
     remote_url: str = "",
+    branch: str = "",
     case_sensitive: bool = False,
     exact: bool = False,
 ) -> list[pygit2.Repository]:
     if not path.is_dir():
         raise ArgValueError(f"'{path}' is not a directory", arg="path")
 
-    if max_depth > 0:
-        log.info("Searching for repositories in '%s' (depth: %d)", path, max_depth)
+    if depth > 0:
+        log.info("Searching for repositories in '%s' (depth: %d)", path, depth)
     else:
         log.info("Searching for repositories in '%s'", path)
 
@@ -216,11 +234,12 @@ def find_repos(
 
     options = FindOptions(
         path=path,
-        max_depth=max_depth,
+        depth=depth,
         hidden=hidden,
         filter=FindFilter(
             name=name if name else "",
             remote_url=remote_url if remote_url else "",
+            branch=branch if branch else "",
             case_sensitive=case_sensitive,
             exact=exact,
         ),
@@ -266,10 +285,11 @@ def find_repos(
 def find_repos_args(args):
     return find_repos(
         path=args.path.resolve(),
-        max_depth=args.depth,
+        depth=args.depth,
         hidden=args.hidden,
         name=args.name,
         remote_url=args.remote_url,
+        branch=args.branch,
         case_sensitive=args.case_sensitive,
         exact=args.exact,
     )
