@@ -4,6 +4,16 @@ class CommandError(Exception):
         self.returncode: int = returncode
 
 
+class GitStateError(CommandError):
+    """
+    Operation cannot continue due to invalid repository state
+    (e.g. HEAD is detached, head is unborn, etc.)
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+
 class ProcedureError(CommandError):
     """
     Internal procedure error.

@@ -14,9 +14,7 @@ from .utils import pl
 log = logging.getLogger(__name__)
 
 fetch_parser = subparsers.add_parser("fetch", parents=[search_parser])
-fetch_parser.add_argument(
-    "-r", "--remote", default="", help="Remote name", dest="remote_name"
-)
+fetch_parser.add_argument("repository", nargs="?", default="")
 fetch_parser.add_argument("-p", "--prune", action="store_true")
 
 remote_callbacks = RemoteCallbacks()
@@ -105,7 +103,7 @@ def fetch_repos(
 def fetch_repos_args(
     repos: list[pygit2.Repository], args: argparse.Namespace
 ) -> list[pygit2.Repository]:
-    return fetch_repos(repos, remote_name=args.remote_name, prune=args.prune)
+    return fetch_repos(repos, remote_name=args.repository, prune=args.prune)
 
 
 def cmd_fetch(args: argparse.Namespace):

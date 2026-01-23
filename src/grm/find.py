@@ -12,7 +12,7 @@ from typing import Optional
 
 from .config import config, subparsers
 from .exceptions import CommandError, ArgValueError
-from .render import render_repos, RenderFormat
+from .render import render_repos, render_parser, parse_render_options
 from .utils import max_threads
 
 
@@ -30,12 +30,7 @@ search_parser.add_argument("path", type=Path)
 search_parser.add_argument("-d", "--depth", type=int, default=0)
 search_parser.add_argument("--hidden", action="store_true")
 
-find_parser = subparsers.add_parser("find", parents=[search_parser])
-find_parser.add_argument("-o", "--output", choices=list(RenderFormat))
-find_parser.add_argument(
-    "--long", action="store_const", const=RenderFormat.LONG, dest="output"
-)
-find_parser.set_defaults(output=RenderFormat.RELATIVE)
+find_parser = subparsers.add_parser("find", parents=[search_parser, render_parser])
 
 
 @dataclass
@@ -297,4 +292,4 @@ def find_repos_args(args):
 
 def cmd_find(args: argparse.Namespace):
     repos = find_repos_args(args)
-    render_repos(repos, args.output)
+    render_repos(repos, parse_render_options(args))

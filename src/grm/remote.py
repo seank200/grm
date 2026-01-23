@@ -87,7 +87,7 @@ class RemoteUrl:
         if owner == "." or owner == "/":
             return ""
 
-        return owner
+        return owner.removeprefix("/")
 
     def name(self) -> str:
         # "https://some-domain.tld/owner/name.git" -> "name"

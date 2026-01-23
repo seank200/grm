@@ -5,7 +5,7 @@ import sys
 import pygit2
 
 from dataclasses import dataclass, field, asdict
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Type
 
 from .exceptions import ArgValueError
@@ -68,7 +68,7 @@ def envvar(key: str, value_type: Type = str):
     value = os.environ.get(key)
 
     if value_type is bool:
-        return value.lower() in ("1", "true") if value else False
+        return value.lower() in ("1", "true", "yes") if value else False
 
     if value is None:
         return None
@@ -94,13 +94,16 @@ def envvar(key: str, value_type: Type = str):
     return value_type
 
 
-def relative_workdir(
-    repo: pygit2.Repository,
-) -> Path:
-    path = Path(repo.workdir)
+def relative_dir(path: PurePath):
     if path.is_relative_to(config.base_path):
         return path.relative_to(config.base_path)
     return path
+
+
+def relative_workdir(
+    repo: pygit2.Repository,
+) -> PurePath:
+    return relative_dir(PurePath(repo.workdir))
 
 
 def configure(args):

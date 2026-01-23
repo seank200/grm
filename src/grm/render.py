@@ -1,3 +1,4 @@
+import argparse
 import concurrent.futures
 import enum
 import logging
@@ -7,17 +8,12 @@ import pygit2
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from pathlib import Path
+from pathlib import PurePath
 from pygit2.enums import FileStatus
-from typing import Optional, Type
+from typing import Type, Literal
 
-from .config import config, relative_workdir
+from .config import config, relative_dir
 from .remote import RemoteUrl
-
-
-NOW = datetime.now()
-
-log = logging.getLogger(__name__)
 
 
 class RenderFormat(enum.StrEnum):
@@ -26,9 +22,43 @@ class RenderFormat(enum.StrEnum):
     LONG = "long"
 
 
+class RenderOptions(enum.IntFlag):
+    DEFAULT = enum.auto()
+    LONG = enum.auto()
+    COMMIT_TIME = enum.auto()  # descending sort on commit_time
+    REVERSE = enum.auto()  # reverse the sort order
+
+
+NOW = datetime.now()
+
+INDEX_ANY = (
+    FileStatus.INDEX_NEW
+    | FileStatus.INDEX_MODIFIED
+    | FileStatus.INDEX_DELETED
+    | FileStatus.INDEX_RENAMED
+    | FileStatus.INDEX_TYPECHANGE
+)
+
+WT_ANY = (
+    FileStatus.WT_NEW
+    | FileStatus.WT_MODIFIED
+    | FileStatus.WT_DELETED
+    | FileStatus.WT_RENAMED
+    | FileStatus.WT_TYPECHANGE
+)
+
+log = logging.getLogger(__name__)
+
+render_parser = argparse.ArgumentParser(add_help=False)
+render_parser.add_argument("-l", action="store_true", dest="long")
+render_parser.add_argument("-t", action="store_true", dest="commit_time")
+render_parser.add_argument("-r", action="store_true", dest="reverse")
+
+
 @dataclass
 class RenderResult:
     path: str
+
     index: bool = False
     worktree: bool = False
     untracked: bool = False
@@ -36,10 +66,11 @@ class RenderResult:
     behind: bool = False
     conflicted: bool = False
     detached: bool = False
+    shallow: bool = False
 
     head: str = ""
     remote: str = ""
-    last_modified: Optional[datetime] = None
+    commit_time: int = -1
 
     def render_status(self) -> str:
         s = ""
@@ -50,6 +81,7 @@ class RenderResult:
         s += "b" if self.behind else "-"
         s += "c" if self.conflicted else "-"
         s += "d" if self.detached else "-"
+        s += "s" if self.shallow else "-"
         return s
 
     def render_head(self) -> str:
@@ -58,30 +90,29 @@ class RenderResult:
     def render_remote(self) -> str:
         return self.remote if self.remote else "-"
 
-    def render_last_modified(self) -> str:
-        if self.last_modified is None:
-            return "--- -- --:--"
+    def render_commit_time(self) -> str:
+        if self.commit_time < 0:
+            return "-           "
 
-        if abs(self.last_modified - NOW) > timedelta(days=180):
+        commit_time_dt = datetime.fromtimestamp(self.commit_time)
+        if abs(NOW - commit_time_dt) > timedelta(days=180):
             fmt = "%b %d, %Y"  # Jan 01, 2025
         else:
             fmt = "%b %d %H:%M"  # Jan 01 18:43
 
-        return self.last_modified.strftime(fmt)
+        return commit_time_dt.strftime(fmt)
 
     def render_path(self) -> str:
-        if config.base_path is not None:
-            path = Path(self.path)
-            if path.is_relative_to(config.base_path):
-                return str(path.relative_to(config.base_path))
-        return self.path
+        return str(relative_dir(PurePath(self.path)))
 
 
 class RenderResults:
     MAX_WIDTH = 24
 
-    def __init__(self, results: Sequence[RenderResult]):
+    def __init__(self, results: Sequence[RenderResult], options: RenderOptions):
         self.results = results
+        self.options = options
+
         self.width_head = 0
         self.width_remote = 0
 
@@ -110,6 +141,10 @@ class RenderResults:
         result = self.results[self.iter]
         self.iter += 1
 
+        path = result.render_path()
+        if not self.options & RenderOptions.LONG:
+            return path
+
         head = result.render_head()
         if len(head) > self.width_head:
             head = head[: self.width_head - 2] + ".."
@@ -124,40 +159,28 @@ class RenderResults:
             + " "
             + ("{:<" + str(self.width_remote) + "}").format(remote)
             + " "
-            + result.render_last_modified()
+            + result.render_commit_time()
             + " "
             + result.render_path()
         )
 
 
-INDEX_ANY = (
-    FileStatus.INDEX_NEW
-    | FileStatus.INDEX_MODIFIED
-    | FileStatus.INDEX_DELETED
-    | FileStatus.INDEX_RENAMED
-    | FileStatus.INDEX_TYPECHANGE
-)
-
-WT_ANY = (
-    FileStatus.WT_NEW
-    | FileStatus.WT_MODIFIED
-    | FileStatus.WT_DELETED
-    | FileStatus.WT_RENAMED
-    | FileStatus.WT_TYPECHANGE
-)
-
-
 def _worker_render(path: str) -> RenderResult:
     repo = pygit2.Repository(path)
-    result = RenderResult(path)
+    result = RenderResult(repo.workdir)
+
+    if repo.is_bare or repo.is_empty:
+        return result
 
     if repo.head_is_unborn:
-        result.head = repo.head.shorthand
+        result.head = "(unborn)"
         return result
+
+    result.shallow = repo.is_shallow
 
     head_obj = repo.get(repo.head.target)
     if isinstance(head_obj, pygit2.Commit):
-        result.last_modified = datetime.fromtimestamp(head_obj.commit_time)
+        result.commit_time = head_obj.commit_time
 
     if repo.head_is_detached:
         result.head = str(repo.head.target)[:8]
@@ -197,7 +220,20 @@ def _worker_render(path: str) -> RenderResult:
     return result
 
 
-def _executor() -> concurrent.futures.Executor:
+def parse_render_options(args: argparse.Namespace) -> RenderOptions:
+    options = RenderOptions.DEFAULT
+
+    if args.long:
+        options |= RenderOptions.LONG
+    if args.commit_time:
+        options |= RenderOptions.COMMIT_TIME
+    if args.reverse:
+        options |= RenderOptions.REVERSE
+
+    return options
+
+
+def render_executor() -> concurrent.futures.Executor:
     """
     Determine the best Executor type to use in rendering, depending on
     the number of CPU cores in the machine
@@ -220,32 +256,30 @@ def _executor() -> concurrent.futures.Executor:
 
 
 def render_repos(
-    repos: list[pygit2.Repository], fmt: RenderFormat = RenderFormat.RELATIVE
+    repos: list[pygit2.Repository], options: RenderOptions = RenderOptions.DEFAULT
 ):
-    if fmt == RenderFormat.RELATIVE:
-        for repo in repos:
-            print(relative_workdir(repo))
-        return
+    if options & RenderOptions.LONG:
+        log.debug("render: Reading repository index")
+        with render_executor() as executor:
+            fs = tuple(executor.submit(_worker_render, repo.workdir) for repo in repos)
+            try:
+                waited_fs = concurrent.futures.wait(fs, timeout=10.0)
+            except KeyboardInterrupt:
+                log.warning("render: Aborting")
+                for f in fs:
+                    f.cancel()
+                raise
 
-    if fmt == RenderFormat.ABSOLUTE:
-        for repo in repos:
-            print(repo.workdir)
-        return
-
-    with _executor() as executor:
-        fs = tuple(executor.submit(_worker_render, repo.workdir) for repo in repos)
-        try:
-            waited_fs = concurrent.futures.wait(fs, timeout=10.0)
-        except KeyboardInterrupt:
-            log.warning("render: Aborting")
-            for f in fs:
-                f.cancel()
-            raise
-
-        results = list(f.result() for f in waited_fs.done)
+            results = list(f.result() for f in waited_fs.done)
+    else:
+        results = list(RenderResult(repo.workdir) for repo in repos)
 
     log.debug("render: Sorting results")
-    results.sort(key=lambda r: r.path)
+    reverse = bool(options & RenderOptions.REVERSE)
+    if options & RenderOptions.COMMIT_TIME:
+        results.sort(key=lambda r: r.commit_time, reverse=not reverse)
+    else:
+        results.sort(key=lambda r: r.path, reverse=reverse)
 
-    for line in RenderResults(results):
+    for line in RenderResults(results, options):
         print(line)
