@@ -81,6 +81,9 @@ class RemoteRepository:
     provider: str
     url: str
 
+    def path(self) -> str:
+        return str(PurePosixPath(urlparse(self.url).path))
+
     def name(self) -> str:
         return PurePosixPath(urlparse(self.url).path).name.removesuffix(".git")
 

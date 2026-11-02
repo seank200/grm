@@ -4,12 +4,12 @@ import subprocess
 from typing import Generator
 import typer
 
-from grm.util import GrmException, RemoteRepository, run_cmd
+from grm.util import GrmException, RemoteRepository, matches_globs, run_cmd
 
 
 ERR_LIST_REPOS = "Failed to list repositories owned by '{}'. {}"
 
-GH_API_ACCEPT = "application/vnd.github+json"
+GH_API_ACCEPT_JSON = "application/vnd.github+json"
 GH_API_VERSION = "2026-03-10"
 
 PER_PAGE = 64
@@ -24,10 +24,15 @@ app = typer.Typer()
 log = logging.getLogger(__name__)
 
 
-def list_repos(owner: str) -> Generator[RemoteRepository, None, None]:
+def list_repos(
+    owner: str,
+    *,
+    globs: list[str]
+) -> Generator[RemoteRepository, None, None]:
     log.info("Listing GitHub repositories owned by '%s'...", owner)
 
     page = 1
+    matched = 0
     total = 0
     is_org = True
 
@@ -45,8 +50,9 @@ def list_repos(owner: str) -> Generator[RemoteRepository, None, None]:
                 raise GeneratorExit()
 
         log.debug(
-            "Listed GitHub repositories owned by '%s' (%d - %d)",
+            "Listed GitHub repositories owned by '%s' (page %d, %d-%d)",
             owner,
+            page,
             PER_PAGE * (page-1),
             PER_PAGE * (page-1) + len(repos) - 1,
         )
@@ -54,21 +60,38 @@ def list_repos(owner: str) -> Generator[RemoteRepository, None, None]:
         for repo in repos:
             total += 1
             try:
-                yield RemoteRepository(
-                    provider="github",
-                    url=repo["clone_url"],
-                )
+                clone_url = repo["clone_url"]
             except KeyError as exc:
-                raise GitHubException(
-                    f"Invalid response from GitHub API (missing property {exc})"
-                )
+                raise GitHubException(ERR_LIST_REPOS.format(
+                    f"Invalid GitHub API response (missing property '{exc}')"
+                ))
+
+            remote_repo = RemoteRepository(
+                provider="github",
+                url=clone_url,
+            )
+            if globs:
+                remote_path = remote_repo.path().removeprefix("/")
+                if not matches_globs(remote_path, globs):
+                    continue
+
+            matched += 1
+            yield remote_repo
 
         page += 1
 
         if len(repos) < PER_PAGE:
             break
 
-    log.debug("Found %d GitHub repositories owned by '%s'", total, owner)
+    if globs:
+        log.debug(
+            "Matched %d/%d GitHub repositories owned by '%s'",
+            matched,
+            total,
+            owner
+        )
+    else:
+        log.debug("Found %d GitHub repositories owned by '%s'", total, owner)
 
 
 def _gh_list_repos(*, user: str = "", org: str = "", page: int = 1) -> list:
@@ -80,10 +103,10 @@ def _gh_list_repos(*, user: str = "", org: str = "", page: int = 1) -> list:
         repos = []
 
     if type(repos) is not list:
-        raise GitHubException(
-            "invalid reponse from GitHub API (expected 'list' "
-            f"but got '{type(repos).__name__}')"
-        )
+        raise GitHubException(ERR_LIST_REPOS.format(
+            "Invalid GitHub API response (expected 'list' but got "
+            f"'{type(repos).__name__}')"
+        ))
 
     return repos
 
@@ -95,7 +118,7 @@ def _gh_api(endpoint: str):
             (
                 "gh",
                 "api",
-                "-H", f"Accept: {GH_API_ACCEPT}",
+                "-H", f"Accept: {GH_API_ACCEPT_JSON}",
                 "-H", f"X-GitHub-Api-Version: {GH_API_VERSION}",
                 endpoint
             )
