@@ -1,0 +1,21 @@
+[project]
+name = "grm"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Youngwoo Kim", email = "youngwoo.kim.200@kt.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "pyyaml>=6.0.3",
+    "tqdm>=4.70.1",
+    "typer>=0.27.3",
+]
+
+[project.scripts]
+grm = "grm:main"
+
+[build-system]
+requires = ["uv_build>=0.10.0,<0.11.0"]
+build-backend = "uv_build"
