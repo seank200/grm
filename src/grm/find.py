@@ -52,10 +52,12 @@ def find_repos(
             continue
 
         if S_ISREG(gitfile_mode):
-            repos.add(GitRepository(dir, resolve=True))
+            repos.add(GitRepository(dir).resolve())
         elif S_ISDIR(gitfile_mode):
             repos.add(GitRepository(dir))
         else:
             log.warning("Ignoring '%s' ('.git' is not a file nor a directory)")
+
+    log.debug("Found %d repositories in '%s'", len(repos), path)
 
     return [repo for repo in repos]

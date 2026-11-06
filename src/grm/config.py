@@ -35,16 +35,54 @@ class RemoteProvider(Enum):
 @dataclass
 class CloneOptions:
     owner: str
+    """Account, group, or organization that owns the repositories to clone"""
+
+    path: str = "{name}"
+    """
+    Path template to use for cloned repositories
+    (supported fields: 'owner', 'name')
+    """
+
     provider: str = "github"
+    """
+    Remote repository provider (possible values: 'github')
+    """
+
     prune: bool = False
+    """
+    Permenantly delete repositories that no longer exist in remote
+    (mutually exclusive with 'archive')
+    """
+
+    archive: bool = True
+    """
+    Move repositories that no longer exist in remote to the archive directory
+    (mutually exclusive with 'prune')
+    """
+
     globs: list[str] = field(default_factory=list)
+    """
+    UNIX-style glob filter (clone URL path, case-insensitive).
+    e.g. "https://github.com/example/repo.git"
+         -> Filter runs against "/example/repo.git"
+
+    Prefix with '!' to exclude matching repositories
+    """
 
 
 @dataclass
 class FindOptions:
     depth: int = 0
+    """Search recursion depth"""
+
     hidden: bool = False
+    """Include hidden(name starts with '.') paths in search"""
+
     globs: list[str] = field(default_factory=list)
+    """
+    UNIX-style glob pattern filter (relative from search root,
+    case-insensitive)
+    """
 
 
 @dataclass

@@ -1,9 +1,10 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from fnmatch import fnmatch
 import logging
 import os
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PurePath
 import subprocess
+from typing import Optional
 from urllib.parse import urlparse
 
 
@@ -80,12 +81,22 @@ class ConsoleHandler(logging.StreamHandler):
 class RemoteRepository:
     provider: str
     url: str
+    _path: PurePath = field(init=False)
 
-    def path(self) -> str:
-        return str(PurePosixPath(urlparse(self.url).path))
+    def __post_init__(self):
+        self._path = PurePosixPath(urlparse(self.url).path).relative_to("/")
 
+    @property
+    def path(self) -> PurePath:
+        return self._path
+
+    @property
+    def owner(self) -> str:
+        return str(self.path.parent)
+
+    @property
     def name(self) -> str:
-        return PurePosixPath(urlparse(self.url).path).name.removesuffix(".git")
+        return self.path.name.removesuffix(".git")
 
 
 log = logging.getLogger(__name__)

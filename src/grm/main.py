@@ -3,6 +3,7 @@ from pathlib import Path
 import typer
 from typing import Annotated, Optional
 
+from grm.clone import app as clone_app
 from grm.config import configure
 from grm.util import GrmException, InvalidArgsError
 
@@ -11,7 +12,8 @@ NAME = "grm"
 VERSION = "0.1.0"
 DESCRIPTION = f"Git Repository Manager v{VERSION}"
 
-app = typer.Typer()
+app = typer.Typer(name=NAME, help=DESCRIPTION)
+app.add_typer(clone_app)
 log = logging.getLogger(__name__)
 
 
@@ -23,6 +25,7 @@ def callback(
     )] = None,
     debug: Annotated[bool, typer.Option(
         "--debug",
+        envvar="GRM_DEBUG",
         hidden=True,
         help="Enable debug level logging (overrides '--quiet')",
     )] = False,
@@ -52,20 +55,14 @@ def run():
     try:
         app()
     except InvalidArgsError as exc:
-        log.error("[ERROR] %s. %s", exc, exc.__cause__ or "")
+        log.error("ERROR: %s. %s", exc, exc.__cause__ or "")
         exit(2)
     except GrmException as exc:
-        log.error("[ERROR] %s. %s", exc, exc.__cause__ or "")
-        exit(1)
-    except KeyboardInterrupt:
-        log.warning(
-            "[WARNING] Operation aborted by user",
-            exc_info=log.isEnabledFor(logging.DEBUG)
-        )
+        log.error("ERROR: %s", exc)
         exit(1)
     except Exception as exc:
         log.critical(
-            "[ERROR] %s",
+            "ERROR: %s",
             exc,
             exc_info=log.isEnabledFor(logging.INFO)
         )

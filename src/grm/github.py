@@ -4,7 +4,7 @@ import subprocess
 from typing import Generator
 import typer
 
-from grm.util import GrmException, RemoteRepository, matches_globs, run_cmd
+from grm.util import GrmException, RemoteRepository, run_cmd
 
 
 ERR_LIST_REPOS = "Failed to list repositories owned by '{}'. {}"
@@ -24,15 +24,10 @@ app = typer.Typer()
 log = logging.getLogger(__name__)
 
 
-def list_repos(
-    owner: str,
-    *,
-    globs: list[str]
-) -> Generator[RemoteRepository, None, None]:
-    log.info("Listing GitHub repositories owned by '%s'...", owner)
+def list_repos(owner: str) -> Generator[RemoteRepository, None, None]:
+    log.debug("Listing GitHub repositories owned by '%s'...", owner)
 
     page = 1
-    matched = 0
     total = 0
     is_org = True
 
@@ -50,7 +45,7 @@ def list_repos(
                 raise GeneratorExit()
 
         log.debug(
-            "Listed GitHub repositories owned by '%s' (page %d, %d-%d)",
+            "GitHub list_repos owner='%s', page=%d (%d-%d)",
             owner,
             page,
             PER_PAGE * (page-1),
@@ -66,32 +61,17 @@ def list_repos(
                     f"Invalid GitHub API response (missing property '{exc}')"
                 ))
 
-            remote_repo = RemoteRepository(
+            yield RemoteRepository(
                 provider="github",
                 url=clone_url,
             )
-            if globs:
-                remote_path = remote_repo.path().removeprefix("/")
-                if not matches_globs(remote_path, globs):
-                    continue
-
-            matched += 1
-            yield remote_repo
 
         page += 1
 
         if len(repos) < PER_PAGE:
             break
 
-    if globs:
-        log.debug(
-            "Matched %d/%d GitHub repositories owned by '%s'",
-            matched,
-            total,
-            owner
-        )
-    else:
-        log.debug("Found %d GitHub repositories owned by '%s'", total, owner)
+    log.debug("Found %d GitHub repositories owned by '%s'", total, owner)
 
 
 def _gh_list_repos(*, user: str = "", org: str = "", page: int = 1) -> list:
@@ -122,6 +102,11 @@ def _gh_api(endpoint: str):
                 "-H", f"X-GitHub-Api-Version: {GH_API_VERSION}",
                 endpoint
             )
+        )
+    except FileNotFoundError:
+        raise GitHubException(
+            "GitHub CLI (gh) not found. Check that GitHub CLI is "
+            "installed and is available"
         )
     except subprocess.CalledProcessError as exc:
         raise GitHubException(

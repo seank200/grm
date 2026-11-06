@@ -16,6 +16,12 @@ class GitException(GrmException):
         super().__init__(*args)
         self.path = path
 
+    def __str__(self):
+        if isinstance(self.__cause__, subprocess.CalledProcessError):
+            return f"{super().__str__()}.\n{self.__cause__.stderr}".rstrip("\n")
+
+        return super().__str__()
+
 
 @dataclass
 class GitBranch:
@@ -79,11 +85,9 @@ class GitRepository:
     def clone(url: str, path: Path) -> "GitRepository":
         log.info("Cloning '%s' (%s)", url, path)
         try:
-            proc = run_cmd(None, ("git", "clone", url, path))
+            run_cmd(None, ("git", "clone", url, str(path)))
         except subprocess.CalledProcessError as exc:
             raise GitException(path, f"Failed to clone '{url}'") from exc
-
-        log.debug("Cloned '%s' (%s). %s", url, path, proc.stdout)
 
         return GitRepository(path)
 
