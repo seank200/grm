@@ -1,10 +1,9 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from fnmatch import fnmatch
 import logging
 import os
 from pathlib import Path, PurePosixPath, PurePath
 import subprocess
-from typing import Optional
 from urllib.parse import urlparse
 
 
@@ -12,12 +11,18 @@ ANSI_RED = "\033[31m"  # ]
 ANSI_YELLOW = "\033[33m"  # ]
 ANSI_RESET = "\033[0m"  # ]
 
+log = logging.getLogger(__name__)
+
 
 class GrmException(Exception):
     ...
 
 
 class InvalidArgsError(GrmException):
+    ...
+
+
+class GrmExit(BaseException):
     ...
 
 
@@ -77,29 +82,24 @@ class ConsoleHandler(logging.StreamHandler):
             return False
 
 
-@dataclass
+@dataclass(frozen=True)
 class RemoteRepository:
     provider: str
     url: str
-    _path: PurePath = field(init=False)
 
-    def __post_init__(self):
-        self._path = PurePosixPath(urlparse(self.url).path).relative_to("/")
+    def parse_url(self):
+        return parse_remote_url(self.url)
 
-    @property
     def path(self) -> PurePath:
-        return self._path
+        return PurePosixPath(urlparse(self.url).path.removeprefix("/"))
 
-    @property
-    def owner(self) -> str:
-        return str(self.path.parent)
-
-    @property
-    def name(self) -> str:
-        return self.path.name.removesuffix(".git")
-
-
-log = logging.getLogger(__name__)
+    # @property
+    # def owner(self) -> str:
+    #     return str(self.path().parent)
+    #
+    # @property
+    # def name(self) -> str:
+    #     return self.path().name.removesuffix(".git")
 
 
 def run_cmd(cwd: Path | None, args):
@@ -123,16 +123,29 @@ def run_cmd(cwd: Path | None, args):
         raise
 
 
-def matches_globs(value: str, globs: list[str]) -> bool:
+def matches_globs(value: str | PurePath, globs: list[str]) -> bool:
+    _value = value if type(value) is str else str(value)
     matches: bool | None = None
     for pattern in globs:
         if pattern.startswith("!"):
-            if fnmatch(value, pattern[1:]):
+            if fnmatch(_value, pattern[1:]):
                 matches = False
             elif matches is None:
                 matches = True
         else:
-            if fnmatch(value, pattern):
+            if fnmatch(_value, pattern):
                 matches = True
 
     return matches or False
+
+
+def confirm(message: str = "Continue?") -> bool:
+    return input(f"{message} (y/N) ").lower() in ('y', 'yes')
+
+
+def parse_remote_url(url: str):
+    """Parse remote repository owner and name from its URL"""
+    path = PurePosixPath(urlparse(url).path.removeprefix("/"))
+    owner = str(path.parent)
+    name = path.name.removesuffix(".git")
+    return owner, name

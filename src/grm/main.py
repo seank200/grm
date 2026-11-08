@@ -5,7 +5,7 @@ from typing import Annotated, Optional
 
 from grm.clone import app as clone_app
 from grm.config import configure
-from grm.util import GrmException, InvalidArgsError
+from grm.util import GrmExit, GrmException, InvalidArgsError
 
 
 NAME = "grm"
@@ -59,6 +59,9 @@ def run():
         exit(2)
     except GrmException as exc:
         log.error("ERROR: %s", exc)
+        exit(1)
+    except GrmExit:
+        log.warning("Operation aborted by user")
         exit(1)
     except Exception as exc:
         log.critical(

@@ -32,6 +32,12 @@ class RemoteProvider(Enum):
     GITHUB = "github"
 
 
+DEFAULT_SCHEME = "https"
+DEFAULT_PROVIDER_HOST = {
+    RemoteProvider.GITHUB: "github.com",
+}
+
+
 @dataclass
 class CloneOptions:
     owner: str
@@ -48,9 +54,14 @@ class CloneOptions:
     Remote repository provider (possible values: 'github')
     """
 
+    host: str = ""
+    """
+    Remote repository provider hostname (for self-hosted providers)
+    """
+
     prune: bool = False
     """
-    Permenantly delete repositories that no longer exist in remote
+    Permanently delete repositories that no longer exist in remote
     (mutually exclusive with 'archive')
     """
 

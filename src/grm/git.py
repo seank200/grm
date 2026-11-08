@@ -5,7 +5,7 @@ from pathlib import Path
 import subprocess
 from typing import ClassVar, Optional
 
-from grm.util import GrmException, run_cmd
+from grm.util import GrmException, run_cmd, parse_remote_url
 
 
 log = logging.getLogger(__name__)
@@ -50,6 +50,9 @@ class GitBranch:
 class GitRemote:
     name: str
     url: str
+
+    def parse_url(self):
+        return parse_remote_url(self.url)
 
 
 @dataclass
