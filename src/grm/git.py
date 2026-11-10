@@ -1,4 +1,3 @@
-from collections.abc import Collection
 from dataclasses import dataclass
 import logging
 from pathlib import Path
@@ -17,10 +16,10 @@ class GitException(GrmException):
         self.path = path
 
     def __str__(self):
-        if isinstance(self.__cause__, subprocess.CalledProcessError):
-            return f"{super().__str__()}.\n{self.__cause__.stderr}".rstrip("\n")
+        if not isinstance(self.__cause__, subprocess.CalledProcessError):
+            return super().__str__()
 
-        return super().__str__()
+        return f"{super().__str__()}.\n{self.__cause__.stderr}".rstrip("\n")
 
 
 @dataclass
@@ -203,8 +202,58 @@ class GitRepository:
         try:
             proc = run_cmd(self.path, ("git", "remote"))
         except subprocess.CalledProcessError as exc:
-            raise GitException(self.path, "Failed to list remote names") from exc
+            raise GitException(
+                self.path,
+                "Failed to list remote names"
+            ) from exc
 
-        remote_names = [line.strip() for line in proc.stdout.splitlines() if line]
+        remote_names = [
+            line.strip()
+            for line in proc.stdout.splitlines()
+            if line
+        ]
         self._remote_names = remote_names
         return remote_names
+
+    def fetch(
+        self,
+        remote_name: str = "",
+        *,
+        all: bool = False,
+        prune: bool = False,
+        tags: bool | None = None,
+        prune_tags: bool = False,
+    ):
+        args = ["git", "fetch"]
+        if all:
+            args.append("--all")
+        elif remote_name:
+            args.append(remote_name)
+        if prune:
+            args.append("--prune")
+        if tags is True:
+            args.append("--tags")
+        elif tags is False:
+            args.append("--no-tags")
+        if prune_tags:
+            args.append("--prune-tags")
+
+        try:
+            proc = run_cmd(self.path, args)
+        except subprocess.CalledProcessError as exc:
+            raise GitException(
+                self.path,
+                "Failed to fetch {}. {}".format(
+                    remote_name or 'remote',
+                    exc,
+                )
+            ) from exc
+
+        output = proc.stdout.rstrip("\n")
+        if output:
+            log.debug(
+                "(%s) Fetched %s. %s",
+                self.name,
+                remote_name or "remote",
+                output
+            )

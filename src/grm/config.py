@@ -54,3 +54,11 @@ class FindOptions:
 
     filters: list[str] = field(default_factory=list)
     """Repository path filter (relative from search root path)"""
+
+
+@dataclass
+class FetchOptions:
+    all: bool = False
+    prune: bool = False
+    tags: bool | None = None
+    prune_tags: bool = False
