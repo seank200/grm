@@ -1,8 +1,7 @@
-from dataclasses import dataclass
 from fnmatch import fnmatch
 import logging
 import os
-from pathlib import Path, PurePosixPath, PurePath
+from pathlib import Path, PurePosixPath
 import subprocess
 from urllib.parse import urlparse
 
@@ -19,26 +18,47 @@ class GrmException(Exception):
 
 
 class InvalidArgsError(GrmException):
-    ...
-
-
-class GrmExit(BaseException):
-    ...
-
-
-class InvalidConfigError(InvalidArgsError):
     def __init__(
         self,
         message: str,
         field: str = "",
-        file: os.PathLike | None = None,
+        file: str | os.PathLike | None = None,
     ):
-        prefix = "Invalid config"
+        prefix = "Invalid argument"
         if field:
-            prefix += f" property '{field}'"
+            prefix += f" '{field}'"
         if file:
-            prefix += f" in file '{file}'"
+            prefix += f" (file '{file}')"
         super().__init__(f"{prefix}: {message}")
+
+
+class UserAbort(BaseException):
+    ...
+
+
+class RemoteRepository:
+    def __init__(self, provider: str, url: str):
+        self.provider = provider
+        self.url = url
+
+        self._p_url = urlparse(url)
+        self._path = PurePosixPath(self._p_url.path.removeprefix("/"))
+
+    @property
+    def hostname(self) -> str:
+        return self._p_url.netloc
+
+    @property
+    def path(self) -> str:
+        return str(self._path)
+
+    @property
+    def owner(self) -> str:
+        return str(self._path.parent)
+
+    @property
+    def name(self) -> str:
+        return self._path.name.removesuffix(".git")
 
 
 class ConsoleHandler(logging.StreamHandler):
@@ -82,26 +102,6 @@ class ConsoleHandler(logging.StreamHandler):
             return False
 
 
-@dataclass(frozen=True)
-class RemoteRepository:
-    provider: str
-    url: str
-
-    def parse_url(self):
-        return parse_remote_url(self.url)
-
-    def path(self) -> PurePath:
-        return PurePosixPath(urlparse(self.url).path.removeprefix("/"))
-
-    # @property
-    # def owner(self) -> str:
-    #     return str(self.path().parent)
-    #
-    # @property
-    # def name(self) -> str:
-    #     return self.path().name.removesuffix(".git")
-
-
 def run_cmd(cwd: Path | None, args):
     try:
         return subprocess.run(
@@ -123,24 +123,26 @@ def run_cmd(cwd: Path | None, args):
         raise
 
 
-def matches_globs(value: str | PurePath, globs: list[str]) -> bool:
-    _value = value if type(value) is str else str(value)
+def matches_globs(value: str, globs: list[str]) -> bool:
     matches: bool | None = None
     for pattern in globs:
         if pattern.startswith("!"):
-            if fnmatch(_value, pattern[1:]):
+            if fnmatch(value, pattern[1:]):
                 matches = False
             elif matches is None:
                 matches = True
         else:
-            if fnmatch(_value, pattern):
+            if fnmatch(value, pattern):
                 matches = True
+            else:
+                matches = False
 
     return matches or False
 
 
-def confirm(message: str = "Continue?") -> bool:
-    return input(f"{message} (y/N) ").lower() in ('y', 'yes')
+def confirm(message: str = "Continue?"):
+    if input(f"{message} (y/N) ").lower() not in ('y', 'yes'):
+        raise UserAbort()
 
 
 def parse_remote_url(url: str):

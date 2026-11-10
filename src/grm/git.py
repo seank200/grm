@@ -65,17 +65,17 @@ class GitWorktree:
     bare: bool = False
 
     @staticmethod
-    def parse(lines: Collection[str]):
+    def parse(lines: str):
         attribs: dict[str, str] = {}
-        for line in lines:
+        for line in lines.splitlines():
             parts = line.split(" ")
             k = parts[0]
             v = parts[1] if len(parts) > 1 else ""
             attribs[k] = v
 
         return GitWorktree(
-            path=Path(attribs["path"]),
-            head=attribs["head"],
+            path=Path(attribs["worktree"]),
+            head=attribs["HEAD"],
             branch=attribs.get("branch"),
             prunable="prunable" in attribs,
             locked="locked" in attribs,
@@ -86,7 +86,7 @@ class GitWorktree:
 class GitRepository:
     @staticmethod
     def clone(url: str, path: Path) -> "GitRepository":
-        log.info("Cloning '%s' (%s)", url, path)
+        log.debug("Cloning '%s' (%s)", url, path)
         try:
             run_cmd(None, ("git", "clone", url, str(path)))
         except subprocess.CalledProcessError as exc:

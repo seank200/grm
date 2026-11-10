@@ -24,8 +24,12 @@ app = typer.Typer()
 log = logging.getLogger(__name__)
 
 
-def list_repos(owner: str) -> Generator[RemoteRepository, None, None]:
-    log.debug("Listing GitHub repositories owned by '%s'...", owner)
+def list_repos(
+    owner: str,
+    *,
+    hostname: str | None = None
+) -> Generator[RemoteRepository, None, None]:
+    log.info("Listing GitHub repositories owned by '%s'...", owner)
 
     page = 1
     total = 0
@@ -33,9 +37,9 @@ def list_repos(owner: str) -> Generator[RemoteRepository, None, None]:
 
     while True:
         if is_org:
-            repos = _gh_list_repos(org=owner, page=page)
+            repos = _gh_list_repos(org=owner, page=page, hostname=hostname)
         else:
-            repos = _gh_list_repos(user=owner, page=page)
+            repos = _gh_list_repos(user=owner, page=page, hostname=hostname)
 
         if page == 1 and len(repos) == 0:
             if is_org:
@@ -74,11 +78,23 @@ def list_repos(owner: str) -> Generator[RemoteRepository, None, None]:
     log.debug("Found %d GitHub repositories owned by '%s'", total, owner)
 
 
-def _gh_list_repos(*, user: str = "", org: str = "", page: int = 1) -> list:
+def _gh_list_repos(
+    *,
+    user: str = "",
+    org: str = "",
+    page: int = 1,
+    hostname: str | None
+) -> list:
     if user:
-        repos = _gh_api(f"/users/{user}/repos?page={page}&per_page={PER_PAGE}")
+        repos = _gh_api(
+            f"/users/{user}/repos?page={page}&per_page={PER_PAGE}",
+            hostname=hostname,
+        )
     elif org:
-        repos = _gh_api(f"/orgs/{org}/repos?page={page}&per_page={PER_PAGE}")
+        repos = _gh_api(
+            f"/orgs/{org}/repos?page={page}&per_page={PER_PAGE}",
+            hostname=hostname,
+        )
     else:
         repos = []
 
@@ -91,18 +107,19 @@ def _gh_list_repos(*, user: str = "", org: str = "", page: int = 1) -> list:
     return repos
 
 
-def _gh_api(endpoint: str):
+def _gh_api(endpoint: str, hostname: str | None):
+    args = [
+        "gh",
+        "api",
+        "-H", f"Accept: {GH_API_ACCEPT_JSON}",
+        "-H", f"X-GitHub-Api-Version: {GH_API_VERSION}",
+        endpoint,
+    ]
+    if hostname:
+        args.append("--hostname")
+        args.append(hostname)
     try:
-        result = run_cmd(
-            None,
-            (
-                "gh",
-                "api",
-                "-H", f"Accept: {GH_API_ACCEPT_JSON}",
-                "-H", f"X-GitHub-Api-Version: {GH_API_VERSION}",
-                endpoint
-            )
-        )
+        result = run_cmd(None, args)
     except FileNotFoundError:
         raise GitHubException(
             "GitHub CLI (gh) not found. Check that GitHub CLI is "

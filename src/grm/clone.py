@@ -1,279 +1,480 @@
-from collections.abc import Collection, Iterable
+from collections.abc import Iterator
+from datetime import datetime
 import logging
 from pathlib import Path
+import shutil
+import sys
+from typing import Annotated, Optional
 import typer
-from typing import Annotated
-from urllib.parse import urlparse
 
-from grm import github
-from grm.config import CloneOptions, RemoteProvider
+from grm.config import (
+    CloneOptions,
+    FindOptions,
+    RemoteProvider,
+    ARCHIVE_DIR,
+)
 from grm.find import find_repos
 from grm.git import GitException, GitRepository
-from grm.util import GrmExit, InvalidArgsError, RemoteRepository, matches_globs, confirm
+from grm.github import list_repos as list_github_repos
+from grm.util import RemoteRepository, InvalidArgsError, confirm, matches_globs
 
-
-LIST_SEP = "\n - "
 
 app = typer.Typer()
 log = logging.getLogger(__name__)
 
 
-@app.command("clone")
+@app.command("clone", help="Clone new remote repositories")
 def cmd_clone(
     owner: Annotated[str, typer.Argument(
-        help="Remote provider account or organization(group) name",
+        help="Remote repository owner (account or organization/group name)",
     )],
-    globs: Annotated[list[str], typer.Option(
+    provider: Annotated[RemoteProvider, typer.Option(
+        help="Remote repository provider name",
+    )] = RemoteProvider.GITHUB,
+    hostname: Annotated[Optional[str], typer.Option(
+        help="Hostname of the remote provider (for self-hosted providers)",
+    )] = None,
+    filters: Annotated[list[str], typer.Option(
         "-g", "--glob",
-        default_factory=list,
-        help="UNIX-style glob filter (clone URL path, case-insensitive)."
-             "Prefix with '!' to exclude matching repositories"
-    )],
-    path: Annotated[str, typer.Option(
-        "-p", "--path",
-        help="Path template to use for cloned repositories "
+        help="Repository clone URL path filter"
+    )] = [],
+    path_template: Annotated[str, typer.Option(
+        "--path",
+        help="Python template string for local clone directory path "
              "(supported fields: 'owner', 'name')",
     )] = "{name}",
-    provider: Annotated[str, typer.Option(
-        "--provider",
-        help="Remote repository provider (possible values: 'github')",
-    )] = "github",
-    host: Annotated[str, typer.Option(
-        "--host",
-        help="Remote repository provider hostname (for self-hosted providers)"
-    )] = "",
     prune: Annotated[bool, typer.Option(
         "--prune",
-        help="Permanently delete repositories that no longer exist "
-             "in remote (mutually exclusive with '--archive')"
+        help="Remove repositories that no longer exist in remote"
     )] = False,
     archive: Annotated[bool, typer.Option(
         "--archive",
-        help="Move repositories that no longer exist in remote to "
-             "the archive directory (mutually exclusive with '--prune')"
+        help="When pruning, archive repositories instead of pruning",
     )] = False,
-    yes: Annotated[bool, typer.Option(
+    no_confirm: Annotated[bool, typer.Option(
         "-y", "--yes",
-        help="Clone repositories without asking for confirmation",
-    )] = False
+        help="Disable confirmation prompts before pruning repositories"
+    )] = False,
 ):
-    opts = CloneOptions(
+    if prune and archive:
+        raise InvalidArgsError("Set either 'prune' or 'archive', not both")
+
+    clone_repos(Path.cwd(), [CloneOptions(
         owner=owner,
-        path=path,
-        provider=provider,
-        host=host,
+        provider=provider.value,
+        hostname=hostname,
+        filters=filters,
+        path_template=path_template,
         prune=prune,
         archive=archive,
-        globs=globs,
+    )], no_confirm)
+
+
+def clone_repos(path: Path, opts: list[CloneOptions], no_confirm: bool):
+    clone_jobs: list[tuple[CloneOptions, RemoteRepository]] = []
+    existing_repos: list[GitRepository] = []
+    prune_jobs: list[GitRepository] = []
+    archive_jobs: list[GitRepository] = []
+
+    for opt in opts:
+        new_repos, _existing_repos, prunable_repos = _list_repos(
+            path,
+            opt.provider,
+            opt.owner,
+            opt.hostname,
+            opt.path_template,
+            opt.filters,
+        )
+
+        existing_repos.extend(_existing_repos)
+        clone_jobs.extend((opt, repo) for repo in new_repos)
+        if opt.prune:
+            prune_jobs.extend(prunable_repos)
+        elif opt.archive:
+            archive_jobs.extend(prunable_repos)
+
+    _log_existing_repos(existing_repos)
+    _log_jobs(clone_jobs, prune_jobs, archive_jobs)
+
+    if prune_jobs:
+        log.warning(
+            "WARNING: This operation will PERMANENTLY delete (prune) "
+            "%d %s. This action cannot be undone.",
+            len(prune_jobs),
+            "repository" if len(prune_jobs) <= 1 else "repositories",
+        )
+
+    if not no_confirm and sys.stdin.isatty():
+        confirm()
+
+    prune_success, prune_failed = _prune_repos(path, prune_jobs)
+    archive_success, archive_failed = _archive_repos(path, archive_jobs)
+    clone_success, clone_failed = _clone_new_repos(path, clone_jobs)
+
+    _log_results(
+        path,
+        clone_success,
+        clone_failed,
+        prune_success,
+        prune_failed,
+        archive_success,
+        archive_failed,
     )
-    log.debug("opts: %s", opts)
 
-    clone_repos(
-        Path.cwd(),
-        opts,
-        local_repos=find_repos(Path.cwd()),
-        confirm_prune=not yes,
-    )
+    return clone_success
 
 
-def clone_repos(
+def _clone_new_repos(
     path: Path,
-    opts: CloneOptions,
-    *,
-    local_repos: Collection[GitRepository] = [],
-    confirm_prune: bool = False,
-) -> list[GitRepository]:
-    if opts.prune and opts.archive:
-        raise ValueError("Set either one of 'prune' or 'archive' -- not both")
+    clone_jobs: list[tuple[CloneOptions, RemoteRepository]]
+) -> tuple[
+    list[tuple[RemoteRepository, GitRepository]],
+    list[RemoteRepository]
+]:
+    if not clone_jobs:
+        return [], []
 
-    new_repos, existing_repos = _list_remote_repos(opts, local_repos)
-    prunable_repos = _list_prunable_repos(
-        new_repos + existing_repos,
-        local_repos
+    log.info(
+        "Cloning %d new %s...",
+        len(clone_jobs),
+        "repository" if len(clone_jobs) <= 1 else "repositories",
     )
-    _log_clone_plan(opts, new_repos, existing_repos, prunable_repos)
+    log_format = f"[%{len(str(len(clone_jobs)))}d/%d] Cloning '%s' (%s)"
 
-    if opts.prune and prunable_repos and confirm_prune:
-        repositories = "repository" if len(prunable_repos) == 1 \
-                else "repositories"
-
-        if not confirm(
-            f"Permanently delete(prune) {len(prunable_repos)} "
-            f"{repositories}? You cannot undo this action."
-        ):
-            raise GrmExit()
-
-    success, failed = _clone_repos(path, opts.path, new_repos)
-
-    return []
-
-
-def _clone_repos(
-    path: Path,
-    subpath: str,
-    remote_repos: list[RemoteRepository],
-):
-    success: list[GitRepository] = []
+    success: list[tuple[RemoteRepository, GitRepository]] = []
     failed: list[RemoteRepository] = []
 
-    for remote_repo in remote_repos:
-        owner, name = remote_repo.parse_url()
-        clone_path = path / subpath.format(owner=owner, name=name)
+    for i, (opt, remote_repo) in enumerate(clone_jobs):
+        clone_subpath = opt.path_template.format(
+            owner=remote_repo.owner,
+            name=remote_repo.name,
+        )
+        clone_path = path / clone_subpath
+
+        log.info(
+            log_format,
+            i+1,
+            len(clone_jobs),
+            remote_repo.url,
+            clone_path.relative_to(path),
+        )
 
         try:
             repo = GitRepository.clone(remote_repo.url, clone_path)
-            success.append(repo)
+            success.append((remote_repo, repo))
         except GitException as exc:
-            log.error("%s", exc)
+            log.error("ERROR: %s", exc)
             failed.append(remote_repo)
-            continue
 
     return success, failed
 
 
-def _log_clone_result(
-    success: list[GitRepository],
-    failed: list[RemoteRepository],
-    pruned: list[GitRepository],
-):
-    ...
+def _prune_repos(
+    path: Path,
+    repos: list[GitRepository]
+) -> tuple[list[GitRepository], list[GitRepository]]:
+    if not repos:
+        return [], []
 
-
-def _list_prunable_repos(
-    remote_repos: Collection[RemoteRepository],
-    local_repos: Collection[GitRepository],
-) -> list[GitRepository]:
-    """
-    Return repositories from 'local_repos' that does not have a matching
-    repository in 'remote_repos'
-    """
-    remote_urls = set(
-        _parse_prune_condition(repo.url)
-        for repo in remote_repos
+    log.info(
+        "Pruning %d %s...",
+        len(repos),
+        "repository" if len(repos) == 1 else "repositories",
     )
+    log_format = f"[%{len(str(len(repos)))}d/%d] Pruning '%s'"
 
-    return [
-        repo
-        for repo in local_repos
-        for remote in repo.list_remotes()
-        if _parse_prune_condition(remote.url) not in remote_urls
-    ]
+    success: list[GitRepository] = []
+    failed: list[GitRepository] = []
+
+    for i, repo in enumerate(repos):
+        log.info(
+            log_format,
+            i+1,
+            len(repos),
+            repo.path.relative_to(path),
+        )
+
+        try:
+            shutil.rmtree(repo.path)
+            success.append(repo)
+        except OSError as exc:
+            log.error(
+                "ERROR: Failed to prune '%s'. %s",
+                repo.path,
+                exc,
+                exc_info=log.isEnabledFor(logging.DEBUG),
+            )
+            failed.append(repo)
+
+    return success, failed
 
 
-def _parse_prune_condition(url: str):
-    """
-    A local repository is considered prunable if there are no
-    remote repositories with a remote URL that has the same
-    hostname and path
-    """
-    p_url = urlparse(url)
-    return p_url.netloc, p_url.path
+def _archive_repos(
+    path: Path,
+    repos: list[GitRepository]
+) -> tuple[list[GitRepository], list[GitRepository]]:
+    if not repos:
+        return [], []
 
+    archive_dir = path / ARCHIVE_DIR
+    archive_dir.mkdir(parents=True, exist_ok=True)
 
-def _list_remote_repos(
-    opts: CloneOptions,
-    local_repos: Iterable[GitRepository],
-):
-    log.info("Listing %s repositories (%s)...", opts.provider, opts.owner)
-    existing_urls: set[str] = set(
-        remote.url
-        for repo in local_repos
-        for remote in repo.list_remotes()
+    log.info(
+        "Archiving %d %s (%s)...",
+        len(repos),
+        "repository" if len(repos) == 1 else "repositories",
+        archive_dir,
     )
+    log_format = f"[%{len(str(len(repos)))}d/%d] Archiving '%s' to '%s'"
 
+    success: list[GitRepository] = []
+    failed: list[GitRepository] = []
+
+    for i, repo in enumerate(repos):
+        archive_target = archive_dir / repo.name
+        if archive_target.exists():
+            archive_target = archive_dir / f"{repo.name}_{datetime.now().timestamp()}"
+        if archive_target.exists():
+            log.error(
+                "ERROR: Failed to archive '%s'. Path '%s' already exists",
+                repo.path,
+                archive_target,
+            )
+            continue
+
+        log.info(
+            log_format,
+            i+1,
+            len(repos),
+            repo.path.relative_to(path),
+            archive_target.relative_to(path),
+        )
+
+        try:
+            shutil.move(repo.path, archive_target)
+            success.append(repo)
+        except OSError as exc:
+            log.error(
+                "ERROR: Failed to archive '%s'. %s",
+                repo.path,
+                exc,
+            )
+            failed.append(repo)
+
+    return success, failed
+
+
+def _list_repos(
+    path: Path,
+    provider: str,
+    owner: str,
+    hostname: str | None,
+    path_template: str,
+    filters: list[str],
+):
     new_repos: list[RemoteRepository] = []
-    existing_repos: list[RemoteRepository] = []
+    prunable_repos: set[GitRepository] = _find_existing_repos(
+        path,
+        owner,
+        path_template
+    )
+    existing_repos: list[GitRepository] = []
 
-    for remote_repo in _fetch_remote_repos(opts.provider, opts.owner, opts.globs):
-        if remote_repo.url in existing_urls:
-            existing_repos.append(remote_repo)
+    url_repos_map: dict[str, list[GitRepository]] = {}
+    for repo in prunable_repos:
+        for remote in repo.list_remotes():
+            try:
+                url_repos_map[remote.url].append(repo)
+            except KeyError:
+                url_repos_map[remote.url] = [repo]
+
+    for remote_repo in _list_remote_repos(provider, owner, hostname):
+        if filters and not matches_globs(remote_repo.path, filters):
+            log.debug("Excluding '%s' (filtered)", remote_repo.path)
+            continue
+
+        repos = url_repos_map.get(remote_repo.url)
+        if repos:
+            for repo in repos:
+                prunable_repos.remove(repo)
+                existing_repos.append(repo)
         else:
             new_repos.append(remote_repo)
 
-    return new_repos, existing_repos
+    return new_repos, existing_repos, prunable_repos
 
 
-def _fetch_remote_repos(
+def _list_remote_repos(
     provider: str,
     owner: str,
-    globs: list[str]
-) -> Iterable[RemoteRepository]:
-    try:
-        _provider = RemoteProvider(provider)
-    except ValueError:
-        raise InvalidArgsError(f"Invalid provider '{provider}'")
+    hostname: str | None
+) -> Iterator[RemoteRepository]:
+    if provider == RemoteProvider.GITHUB.value:
+        return list_github_repos(owner, hostname=hostname)
 
-    if _provider == RemoteProvider.GITHUB:
-        remote_repos = github.list_repos(owner)
-    else:
-        raise RuntimeError()
-
-    for remote_repo in remote_repos:
-        if len(globs) == 0 or matches_globs(remote_repo.path(), globs):
-            yield remote_repo
+    raise InvalidArgsError(f"Unsupported remote provider '{provider}'")
 
 
-def _log_clone_plan(
-    opts: CloneOptions,
-    new_repos: list[RemoteRepository],
-    existing_repos: list[RemoteRepository],
-    prunable_repos: list[GitRepository],
+def _find_existing_repos(
+    path: Path,
+    owner: str,
+    path_template: str,
 ):
-    if existing_repos:
-        repositories = "repository" if len(existing_repos) == 1 \
-                else "repositories"
+    sub_path_glob = path_template.format(owner=owner, name="*")
+    return find_repos(path, FindOptions(
+        depth=1,
+        hidden="." in path_template,
+        filters=[sub_path_glob]
+    ))
 
-        if log.isEnabledFor(logging.DEBUG):
-            existing_urls = [r.url for r in existing_repos]
-            existing_urls.sort()
-            log.debug(
-                "Found %d existing %s (already cloned): \n - %s",
-                len(existing_repos),
-                repositories,
-                "\n - ".join(existing_urls),
-            )
-        else:
+
+def _log_jobs(
+    clone_jobs: list[tuple[CloneOptions, RemoteRepository]],
+    prune_jobs: list[GitRepository],
+    archive_jobs: list[GitRepository],
+):
+    if clone_jobs:
+        if log.isEnabledFor(logging.INFO):
+            clone_urls = [repo.url for _, repo in clone_jobs]
+            clone_urls.sort()
             log.info(
-                "Found %d existing %s (already cloned)",
-                len(existing_repos),
-                repositories,
+                "Found %d new %s (will be cloned)\n - %s",
+                len(clone_jobs),
+                "repository" if len(clone_jobs) == 1 else "repositories",
+                "\n - ".join(clone_urls)
             )
+    else:
+        log.info("No new repositories found to clone")
 
-    if new_repos and log.isEnabledFor(logging.INFO):
-        repositories = "repository" if len(new_repos) == 1 \
-                else "repositories"
+    if prune_jobs and log.isEnabledFor(logging.WARNING):
+        prune_paths = [str(repo.path) for repo in prune_jobs]
+        prune_paths.sort()
 
-        new_urls = [r.url for r in new_repos]
-        new_urls.sort()
+        log.warning(
+            "Found %d prunable %s (will be PERMANENTLY DELETED)\n - %s",
+            len(prune_paths),
+            "repository" if len(prune_paths) <= 1 else "repositories",
+            "\n - ".join(prune_paths),
+        )
 
-        log.info(
-            "Found %d new %s (will be cloned): \n - %s",
-            len(new_urls),
-            repositories,
-            "\n - ".join(new_urls),
+    if archive_jobs and log.isEnabledFor(logging.WARNING):
+        archive_paths = [str(repo.path) for repo in archive_jobs]
+        archive_paths.sort()
+
+        log.warning(
+            "Found %d archivable %s (will be moved)\n - %s",
+            len(archive_paths),
+            "repository" if len(archive_paths) <= 1 else "repositories",
+            "\n - ".join(archive_paths),
+        )
+
+
+def _log_existing_repos(existing_repos: list[GitRepository]):
+    if existing_repos and log.isEnabledFor(logging.DEBUG):
+        existing_paths = [
+            str(repo.path)
+            for repo in existing_repos
+        ]
+        existing_paths.sort()
+
+        log.debug(
+            "Found %d existing %s (already cloned)\n - %s",
+            len(existing_paths),
+            "repository" if len(existing_paths) <= 1 else "repositories",
+            "\n - ".join(existing_paths)
         )
     else:
-        log.info("Found 0 new repositories")
+        log.info(
+            "Found %d existing %s (already cloned)",
+            len(existing_repos),
+            "repository" if len(existing_repos) <= 1 else "repositories",
+        )
 
-    if prunable_repos:
-        repositories = "repository" if len(prunable_repos) == 1 \
-                else "repositories"
 
-        prunable_paths = [str(r.path) for r in prunable_repos]
-        prunable_paths.sort()
+def _log_results(
+    path: Path,
+    clone_success: list[tuple[RemoteRepository, GitRepository]],
+    clone_failed: list[RemoteRepository],
+    prune_success: list[GitRepository],
+    prune_failed: list[GitRepository],
+    archive_success: list[GitRepository],
+    archive_failed: list[GitRepository],
+) -> None:
+    if log.isEnabledFor(logging.DEBUG):
+        if clone_success:
+            log.debug(
+                "Cloned %d/%d %s: \n - %s",
+                len(clone_success),
+                len(clone_success) + len(clone_failed),
+                "repository" if len(clone_success) <= 1 else "repositories",
+                "\n - ".join(
+                    f"{remote_repo.url} ({repo.path.relative_to(path)})"
+                    for remote_repo, repo in clone_success
+                )
+            )
+        if prune_success:
+            log.debug(
+                "Pruned %d/%d %s: \n - %s",
+                len(prune_success),
+                len(prune_success) + len(prune_failed),
+                "repository" if len(prune_success) <= 1 else "repositories",
+                "\n - ".join(
+                    str(repo.path.relative_to(path))
+                    for repo in prune_success
+                )
+            )
 
-        if opts.prune:
-            action = "deleted"
-        elif opts.archive:
-            action = "archived"
-        else:
-            action = "left as-is"
+        if archive_success:
+            log.debug(
+                "Archived %d/%d %s: \n - %s",
+                len(archive_success),
+                len(archive_success) + len(archive_failed),
+                "repository" if len(archive_success) <= 1 else "repositories",
+                "\n - ".join(
+                    str(repo.path.relative_to(path))
+                    for repo in archive_success
+                )
+            )
+    else:
+        log.info(
+            "Cloned %d/%d, pruned %d/%d, archived %d/%d repositories",
+            len(clone_success),
+            len(clone_success) + len(clone_failed),
+            len(prune_success),
+            len(prune_success) + len(prune_failed),
+            len(archive_success),
+            len(archive_success) + len(archive_failed),
+        )
 
-        log.log(
-            logging.WARNING if opts.prune else logging.INFO,
-            "Found %d prunable %s (will be %s) \n - %s",
-            len(prunable_paths),
-            repositories,
-            action,
-            "\n - ".join(prunable_paths)
+    if clone_failed and log.isEnabledFor(logging.ERROR):
+        log.error(
+            "Failed to clone %d/%d %s: \n - %s",
+            len(clone_failed),
+            len(clone_success) + len(clone_failed),
+            "repository" if len(clone_failed) <= 1 else "repositories",
+            "\n - ".join(repo.url for repo in clone_failed)
+        )
+
+    if prune_failed and log.isEnabledFor(logging.ERROR):
+        log.error(
+            "Failed to prune %d/%d %s: \n - %s",
+            len(prune_failed),
+            len(prune_success), len(prune_failed),
+            "repository" if len(prune_failed) <= 1 else "repositories",
+            "\n - ".join(
+                str(repo.path.relative_to(path))
+                for repo in prune_failed
+            ),
+        )
+
+    if archive_failed and log.isEnabledFor(logging.ERROR):
+        log.error(
+            "Failed to archive %d/%d %s to '%s': \n - %s",
+            len(archive_failed),
+            len(archive_success) + len(archive_failed),
+            "repository" if len(archive_failed) <= 1 else "repositories",
+            "\n - ".join(
+                str(repo.path.relative_to(path))
+                for repo in archive_failed
+            )
         )

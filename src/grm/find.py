@@ -1,63 +1,147 @@
+from collections.abc import Generator
 import logging
 import os
 from pathlib import Path
 from stat import S_ISREG, S_ISDIR
+from typing import Annotated
+import typer
 
+from grm.config import FindOptions
 from grm.git import GitRepository
-from grm.util import GrmException, matches_globs
+from grm.util import matches_globs
 
 
+app = typer.Typer()
 log = logging.getLogger(__name__)
 
 
-def find_repos(
-    path: Path,
-    depth: int = 0,
-    *,
-    hidden: bool = False,
-    globs: list[str] = [],
-) -> list[GitRepository]:
-    queue: list[Path] = []
-    repos: set[GitRepository] = set()
+@app.command("find", help="Recursively search for local git repositories")
+def cmd_find(
+    depth: Annotated[int, typer.Option(
+        "-d", "--depth",
+        help="Maximum search recursion depth (0 for no limit)",
+    )] = 0,
+    hidden: Annotated[bool, typer.Option(
+        "--hidden",
+        help="Include hidden files (starting with '.') in search",
+    )] = False,
+    filters: Annotated[list[str], typer.Option(
+        "-g", "--glob",
+        help="Repository path filter (relative from search root path)",
+    )] = [],
+    sort: Annotated[bool, typer.Option(
+        "--sort",
+        help="Sort result output",
+    )] = False,
+):
+    repos = find_repos(Path.cwd(), FindOptions(depth, hidden, filters))
+    if sort:
+        repos = list(repos)
+        repos.sort(key=lambda r: r.path)
 
-    if path.is_dir():
-        queue.append(path)
+    for repo in repos:
+        print(repo.path)
+
+
+@app.command("ls", help="List git repositories in given directory")
+def cmd_ls(
+    path: Annotated[Path, typer.Argument(
+        default_factory=Path.cwd,
+        help="Repository search root path",
+    )],
+    hidden: Annotated[bool, typer.Option(
+        "--hidden",
+        help="Include hidden files (starting with '.') in search",
+    )] = False,
+    sort: Annotated[bool, typer.Option(
+        "--sort",
+        help="Sort result output",
+    )] = False,
+):
+    repos = find_repos(path, FindOptions(depth=1, hidden=hidden))
+    if sort:
+        repos = list(repos)
+        repos.sort(key=lambda r: r.path)
+
+    for repo in repos:
+        print(repo.path)
+
+
+def find_repos(path: Path, opts: FindOptions) -> set[GitRepository]:
+    log.debug("Searching for repositories in '%s'...", path)
+    dirs: list[Path] = [path]
+    repos: set[GitRepository] = set()
 
     while True:
         try:
-            dir = queue.pop()
+            dirpath = dirs.pop()
         except IndexError:
             break
 
-        if depth > 0 and len(dir.relative_to(path).parts) > depth:
+        relpath = dirpath.relative_to(path)
+        if opts.depth > 0 and len(relpath.parts) > opts.depth:
+            continue
+
+        if not opts.hidden and dirpath.name.startswith("."):
             continue
 
         try:
-            gitfile_mode = (dir / ".git").stat().st_mode
+            mode = _get_mode(dirpath / ".git")
         except FileNotFoundError:
-            with os.scandir(dir) as it:
-                for entry in it:
-                    if entry.is_dir(follow_symlinks=False):
-                        if hidden or not entry.name.startswith("."):
-                            queue.append(Path(entry.path))
-            continue
-        except PermissionError:
-            log.warning("Not searching '%s' (no permissions)", dir)
-            continue
-        except OSError as exc:
-            raise GrmException(f"Failed to search '{dir}'") from exc
-
-        if globs and not matches_globs(str(dir.relative_to(path)), globs):
-            log.debug("Ignoring '%s' (does not match pattern)", dir)
+            dirs.extend(_find_subdirs(dirpath))
             continue
 
-        if S_ISREG(gitfile_mode):
-            repos.add(GitRepository(dir).resolve())
-        elif S_ISDIR(gitfile_mode):
-            repos.add(GitRepository(dir))
+        if opts.filters and not matches_globs(str(relpath), opts.filters):
+            continue
+
+        if S_ISREG(mode):  # linked worktree
+            repos.add(GitRepository(dirpath).resolve())
+        elif S_ISDIR(mode):  # main worktree
+            repos.add(GitRepository(dirpath))
         else:
-            log.warning("Ignoring '%s' ('.git' is not a file nor a directory)")
+            continue
 
-    log.debug("Found %d repositories in '%s'", len(repos), path)
+    if repos:
+        repositories = "repository" if len(repos) == 1 else "repositories"
+        log.debug("Found %d %s in '%s'", len(repos), repositories, path)
+    else:
+        log.warning("No repositories found in '%s'", path)
 
-    return [repo for repo in repos]
+    return repos
+
+
+def _find_subdirs(path: Path) -> Generator[Path, None, None]:
+    try:
+        with os.scandir(path) as entries:
+            for e in entries:
+                if e.is_dir(follow_symlinks=False):
+                    yield Path(e)
+    except OSError as exc:
+        log.error(
+            "ERROR: Failed to search '%s'. %s",
+            path,
+            exc,
+            exc_info=log.isEnabledFor(logging.DEBUG),
+        )
+
+
+def _get_mode(path: Path) -> int:
+    try:
+        return path.stat().st_mode
+    except FileNotFoundError:
+        raise
+    except NotADirectoryError:
+        pass
+    except PermissionError:
+        log.warning("No permission to read '%s'", path)
+    except TimeoutError:
+        log.warning("Timeout while reading '%s'", path)
+    except OSError as exc:
+        log.error(
+            "ERROR: Failed to search '%s'. %s",
+            path,
+            exc,
+            exc_info=log.isEnabledFor(logging.DEBUG)
+        )
+
+    return 0
