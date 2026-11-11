@@ -400,9 +400,9 @@ def _log_results(
     archive_success: list[GitRepository],
     archive_failed: list[GitRepository],
 ) -> None:
-    if log.isEnabledFor(logging.DEBUG):
+    if log.isEnabledFor(logging.INFO):
         if clone_success:
-            log.debug(
+            log.info(
                 "Cloned %d/%d %s: \n - %s",
                 len(clone_success),
                 len(clone_success) + len(clone_failed),
@@ -413,7 +413,7 @@ def _log_results(
                 )
             )
         if prune_success:
-            log.debug(
+            log.info(
                 "Pruned %d/%d %s: \n - %s",
                 len(prune_success),
                 len(prune_success) + len(prune_failed),
@@ -425,7 +425,7 @@ def _log_results(
             )
 
         if archive_success:
-            log.debug(
+            log.info(
                 "Archived %d/%d %s: \n - %s",
                 len(archive_success),
                 len(archive_success) + len(archive_failed),
@@ -435,46 +435,37 @@ def _log_results(
                     for repo in archive_success
                 )
             )
-    else:
-        log.info(
-            "Cloned %d/%d, pruned %d/%d, archived %d/%d repositories",
-            len(clone_success),
-            len(clone_success) + len(clone_failed),
-            len(prune_success),
-            len(prune_success) + len(prune_failed),
-            len(archive_success),
-            len(archive_success) + len(archive_failed),
-        )
 
-    if clone_failed and log.isEnabledFor(logging.ERROR):
-        log.error(
-            "Failed to clone %d/%d %s: \n - %s",
-            len(clone_failed),
-            len(clone_success) + len(clone_failed),
-            "repository" if len(clone_failed) <= 1 else "repositories",
-            "\n - ".join(repo.url for repo in clone_failed)
-        )
-
-    if prune_failed and log.isEnabledFor(logging.ERROR):
-        log.error(
-            "Failed to prune %d/%d %s: \n - %s",
-            len(prune_failed),
-            len(prune_success), len(prune_failed),
-            "repository" if len(prune_failed) <= 1 else "repositories",
-            "\n - ".join(
-                str(repo.path.relative_to(path))
-                for repo in prune_failed
-            ),
-        )
-
-    if archive_failed and log.isEnabledFor(logging.ERROR):
-        log.error(
-            "Failed to archive %d/%d %s to '%s': \n - %s",
-            len(archive_failed),
-            len(archive_success) + len(archive_failed),
-            "repository" if len(archive_failed) <= 1 else "repositories",
-            "\n - ".join(
-                str(repo.path.relative_to(path))
-                for repo in archive_failed
+    if log.isEnabledFor(logging.ERROR):
+        if clone_failed:
+            log.error(
+                "Failed to clone %d/%d %s: \n - %s",
+                len(clone_failed),
+                len(clone_success) + len(clone_failed),
+                "repository" if len(clone_failed) <= 1 else "repositories",
+                "\n - ".join(repo.url for repo in clone_failed)
             )
-        )
+
+        if prune_failed:
+            log.error(
+                "Failed to prune %d/%d %s: \n - %s",
+                len(prune_failed),
+                len(prune_success), len(prune_failed),
+                "repository" if len(prune_failed) <= 1 else "repositories",
+                "\n - ".join(
+                    str(repo.path.relative_to(path))
+                    for repo in prune_failed
+                ),
+            )
+
+        if archive_failed:
+            log.error(
+                "Failed to archive %d/%d %s to '%s': \n - %s",
+                len(archive_failed),
+                len(archive_success) + len(archive_failed),
+                "repository" if len(archive_failed) <= 1 else "repositories",
+                "\n - ".join(
+                    str(repo.path.relative_to(path))
+                    for repo in archive_failed
+                )
+            )
