@@ -67,15 +67,17 @@ def cmd_clone(
         path_template=path_template,
         prune=prune,
         archive=archive,
-    )], no_confirm)
+        batch=no_confirm,
+    )])
 
 
-def clone_repos(path: Path, opts: list[CloneOptions], no_confirm: bool):
+def clone_repos(path: Path, opts: list[CloneOptions]):
     clone_jobs: list[tuple[CloneOptions, RemoteRepository]] = []
     existing_repos: list[GitRepository] = []
     prune_jobs: list[GitRepository] = []
     archive_jobs: list[GitRepository] = []
 
+    needs_confirm = False
     for opt in opts:
         new_repos, _existing_repos, prunable_repos = _list_repos(
             path,
@@ -89,6 +91,8 @@ def clone_repos(path: Path, opts: list[CloneOptions], no_confirm: bool):
         existing_repos.extend(_existing_repos)
         clone_jobs.extend((opt, repo) for repo in new_repos)
         if opt.prune:
+            if not opt.batch:
+                needs_confirm = True
             prune_jobs.extend(prunable_repos)
         elif opt.archive:
             archive_jobs.extend(prunable_repos)
@@ -104,7 +108,7 @@ def clone_repos(path: Path, opts: list[CloneOptions], no_confirm: bool):
             "repository" if len(prune_jobs) <= 1 else "repositories",
         )
 
-    if not no_confirm and sys.stdin.isatty():
+    if needs_confirm and sys.stdin.isatty():
         confirm()
 
     prune_success, prune_failed = _prune_repos(path, prune_jobs)
@@ -125,7 +129,7 @@ def clone_repos(path: Path, opts: list[CloneOptions], no_confirm: bool):
 
 
 def _clone_new_repos(
-    path: Path,
+    workspace: Path,
     clone_jobs: list[tuple[CloneOptions, RemoteRepository]]
 ) -> tuple[
     list[tuple[RemoteRepository, GitRepository]],
@@ -139,38 +143,39 @@ def _clone_new_repos(
         len(clone_jobs),
         "repository" if len(clone_jobs) <= 1 else "repositories",
     )
-    log_format = f"[%{len(str(len(clone_jobs)))}d/%d] Cloning '%s' (%s)"
 
     success: list[tuple[RemoteRepository, GitRepository]] = []
     failed: list[RemoteRepository] = []
 
-    for i, (opt, remote_repo) in enumerate(clone_jobs):
+    for opt, remote_repo in clone_jobs:
         clone_subpath = opt.path_template.format(
             owner=remote_repo.owner,
             name=remote_repo.name,
         )
-        clone_path = path / clone_subpath
+        clone_path = workspace / clone_subpath
 
         log.info(
-            log_format,
-            i+1,
-            len(clone_jobs),
+            "Cloning '%s' (%s)",
             remote_repo.url,
-            clone_path.relative_to(path),
+            clone_path.relative_to(workspace),
         )
 
         try:
             repo = GitRepository.clone(remote_repo.url, clone_path)
-            success.append((remote_repo, repo))
         except GitException as exc:
             log.error("ERROR: %s", exc)
             failed.append(remote_repo)
+            continue
+
+        success.append((remote_repo, repo))
+
+        log.debug("Cloned '%s' (%s)", remote_repo.url, clone_path)
 
     return success, failed
 
 
 def _prune_repos(
-    path: Path,
+    workspace: Path,
     repos: list[GitRepository]
 ) -> tuple[list[GitRepository], list[GitRepository]]:
     if not repos:
@@ -181,22 +186,15 @@ def _prune_repos(
         len(repos),
         "repository" if len(repos) == 1 else "repositories",
     )
-    log_format = f"[%{len(str(len(repos)))}d/%d] Pruning '%s'"
 
     success: list[GitRepository] = []
     failed: list[GitRepository] = []
 
-    for i, repo in enumerate(repos):
-        log.info(
-            log_format,
-            i+1,
-            len(repos),
-            repo.path.relative_to(path),
-        )
+    for repo in repos:
+        log.debug("Pruning '%s'", repo.path)
 
         try:
             shutil.rmtree(repo.path)
-            success.append(repo)
         except OSError as exc:
             log.error(
                 "ERROR: Failed to prune '%s'. %s",
@@ -205,18 +203,23 @@ def _prune_repos(
                 exc_info=log.isEnabledFor(logging.DEBUG),
             )
             failed.append(repo)
+            continue
+
+        success.append(repo)
+
+        log.info("Pruned '%s'", repo.path.relative_to(workspace))
 
     return success, failed
 
 
 def _archive_repos(
-    path: Path,
+    workspace: Path,
     repos: list[GitRepository]
 ) -> tuple[list[GitRepository], list[GitRepository]]:
     if not repos:
         return [], []
 
-    archive_dir = path / ARCHIVE_DIR
+    archive_dir = workspace / ARCHIVE_DIR
     archive_dir.mkdir(parents=True, exist_ok=True)
 
     log.info(
@@ -225,34 +228,24 @@ def _archive_repos(
         "repository" if len(repos) == 1 else "repositories",
         archive_dir,
     )
-    log_format = f"[%{len(str(len(repos)))}d/%d] Archiving '%s' to '%s'"
 
     success: list[GitRepository] = []
     failed: list[GitRepository] = []
 
-    for i, repo in enumerate(repos):
-        archive_target = archive_dir / repo.name
-        if archive_target.exists():
-            archive_target = archive_dir / f"{repo.name}_{datetime.now().timestamp()}"
-        if archive_target.exists():
+    for repo in repos:
+        archive_path = archive_dir / f"{repo.name}_{datetime.now().timestamp()}"
+        if archive_path.exists():
             log.error(
                 "ERROR: Failed to archive '%s'. Path '%s' already exists",
                 repo.path,
-                archive_target,
+                archive_path,
             )
             continue
 
-        log.info(
-            log_format,
-            i+1,
-            len(repos),
-            repo.path.relative_to(path),
-            archive_target.relative_to(path),
-        )
+        log.debug("Archiving '%s' to '%s'", repo.path, archive_path)
 
         try:
-            shutil.move(repo.path, archive_target)
-            success.append(repo)
+            shutil.move(repo.path, archive_path)
         except OSError as exc:
             log.error(
                 "ERROR: Failed to archive '%s'. %s",
@@ -260,6 +253,15 @@ def _archive_repos(
                 exc,
             )
             failed.append(repo)
+            continue
+
+        success.append(repo)
+
+        log.info(
+            "Archived '%s' to '%s'",
+            repo.path.relative_to(workspace),
+            archive_path.relative_to(workspace),
+        )
 
     return success, failed
 

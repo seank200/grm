@@ -55,7 +55,7 @@ def merge_repos(
     options: MergeOptions,
 ) -> list[GitRepository]:
     log.info(
-        "Merging %d %s...",
+        "Merging upstream changes of %d %s...",
         len(repos),
         "repository" if len(repos) <= 1 else "repositories",
     )
@@ -99,9 +99,10 @@ def _merge_repo(
     )
 
     log.info(
-        "Merged '%s' of '%s'. %s",
-        branch.upstream,
+        "Merged '%s' (%s..%s). %s",
         repo.path.relative_to(workspace),
+        branch.name,
+        branch.upstream,
         proc.stdout.rstrip("\n"),
     )
 
@@ -119,11 +120,11 @@ def _log_results(
         success_paths.sort()
 
         log.info(
-            "Merged upstream changes of %d/%d %s. \n - %s",
+            "Merged upstream changes of %d/%d %s: %s",
             len(success),
             len(success) + len(failed),
             "repository" if len(success) <= 1 else "repositories",
-            "\n - ".join(success_paths),
+            ", ".join(success_paths),
         )
 
     if failed and log.isEnabledFor(logging.ERROR):

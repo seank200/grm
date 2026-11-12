@@ -83,25 +83,28 @@ def fetch_repos(
         len(repos),
         "repository" if len(repos) <= 1 else "repositories",
     )
-    log_format = f"[%{len(str(len(repos)))}d/%d] Fetching '%s'"
-    for i, repo in enumerate(repos):
-        log.info(
-            log_format,
-            i+1,
-            len(repos),
-            repo.path.relative_to(workspace),
-        )
+    for repo in repos:
+        rel_path = repo.path.relative_to(workspace)
+        log.info("Fetching '%s'", rel_path)
         try:
-            repo.fetch(
+            proc = repo.fetch(
                 all=opts.all,
                 prune=opts.prune,
                 tags=opts.tags,
                 prune_tags=opts.prune_tags,
             )
-            success.append(repo)
         except GitException as exc:
             log.error("ERROR: %s", exc)
             failed.append(repo)
+            continue
+
+        success.append(repo)
+
+        output = proc.stderr.rstrip("\n")
+        if output:
+            log.info("Fetched '%s'. \n%s", rel_path, output)
+        else:
+            log.debug("Fetched '%s'", rel_path)
 
     _log_results(workspace, success, failed)
 
@@ -113,28 +116,20 @@ def _log_results(
     success: list[GitRepository],
     failed: list[GitRepository]
 ):
-    if success:
-        if log.isEnabledFor(logging.DEBUG):
-            success_paths = [
-                str(repo.path.relative_to(workspace))
-                for repo in success
-            ]
-            success_paths.sort()
+    if success and log.isEnabledFor(logging.INFO):
+        success_paths = [
+            str(repo.path.relative_to(workspace))
+            for repo in success
+        ]
+        success_paths.sort()
 
-            log.debug(
-                "Fetched %d/%d %s: \n - %s",
-                len(success),
-                len(success) + len(failed),
-                "repository" if len(success) <= 1 else "repositories",
-                "\n - ".join(success_paths),
-            )
-        else:
-            log.info(
-                "Fetched %d/%d %s",
-                len(success),
-                len(success) + len(failed),
-                "repository" if len(success) <= 1 else "repositories",
-            )
+        log.info(
+            "Fetched %d/%d %s: %s",
+            len(success),
+            len(success) + len(failed),
+            "repository" if len(success) <= 1 else "repositories",
+            ", ".join(success_paths),
+        )
 
     if failed:
         if log.isEnabledFor(logging.ERROR):
