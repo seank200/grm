@@ -62,3 +62,9 @@ class FetchOptions:
     prune: bool = False
     tags: bool | None = None
     prune_tags: bool = False
+
+
+@dataclass
+class MergeOptions:
+    ff: bool | None = None
+    ff_only: bool = False

@@ -120,6 +120,21 @@ class GitRepository:
 
         return GitRepository(worktree.path)
 
+    def clear_cache(
+        self,
+        *,
+        worktree: bool = True,
+        branch: bool = True,
+        remote: bool = True,
+    ):
+        if worktree:
+            self._worktrees = None
+        if branch:
+            self._branches = None
+        if remote:
+            self._remote_names = None
+            self._remotes = None
+
     def list_worktrees(self, *, cache: bool = True) -> list[GitWorktree]:
         if cache and self._worktrees is not None:
             return self._worktrees
@@ -223,7 +238,7 @@ class GitRepository:
         prune: bool = False,
         tags: bool | None = None,
         prune_tags: bool = False,
-    ):
+    ) -> subprocess.CompletedProcess[str]:
         args = ["git", "fetch"]
         if all:
             args.append("--all")
@@ -249,11 +264,32 @@ class GitRepository:
                 )
             ) from exc
 
-        output = proc.stdout.rstrip("\n")
-        if output:
-            log.debug(
-                "(%s) Fetched %s. %s",
-                self.name,
-                remote_name or "remote",
-                output
-            )
+        self.clear_cache()
+        return proc
+
+    def merge(
+        self,
+        ref: str,
+        *,
+        ff: bool | None = None,
+        ff_only: bool = False,
+    ) -> subprocess.CompletedProcess[str]:
+        args = ["git", "merge"]
+        if ff is True:
+            args.append("--ff")
+        elif ff is False:
+            args.append("--no-ff")
+        elif ff_only:
+            args.append("--ff-only")
+        args.append(ref)
+
+        try:
+            proc = run_cmd(self.path, args)
+        except subprocess.CalledProcessError as exc:
+            raise GitException(
+                self.path,
+                f"Failed to merge '{ref}'"
+            ) from exc
+
+        self.clear_cache()
+        return proc
