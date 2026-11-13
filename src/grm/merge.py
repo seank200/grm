@@ -101,8 +101,8 @@ def _merge_repo(
     log.info(
         "Merged '%s' (%s..%s). %s",
         repo.path.relative_to(workspace),
-        branch.name,
-        branch.upstream,
+        branch.name_short,
+        branch.upstream_short,
         proc.stdout.rstrip("\n"),
     )
 
@@ -135,7 +135,7 @@ def _log_results(
         failed_paths.sort()
 
         log.error(
-            "ERROR: Failed to merge upstream changes of %d/%d %s. \n - %s",
+            "ERROR: Failed to merge upstream changes of %d/%d %s: \n - %s",
             len(failed),
             len(success) + len(failed),
             "repository" if len(failed) <= 1 else "repositories",

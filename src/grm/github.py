@@ -30,7 +30,7 @@ def list_repos(
     *,
     hostname: str | None = None
 ) -> Generator[RemoteRepository, None, None]:
-    log.info("Listing GitHub repositories owned by '%s'...", owner)
+    log.info("Listing GitHub repositories of '%s'...", owner)
 
     page = 1
     total = 0

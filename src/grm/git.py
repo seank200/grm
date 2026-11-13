@@ -45,6 +45,17 @@ class GitBranch:
                 track=track or None,
             )
 
+    @property
+    def name_short(self) -> str:
+        return self.name[self.name.find("/", 5)+1:]
+
+    @property
+    def upstream_short(self) -> Optional[str]:
+        if self.upstream is None:
+            return None
+
+        return self.upstream[self.upstream.find("/", 5)+1:]
+
 
 @dataclass
 class GitRemote:
