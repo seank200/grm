@@ -94,12 +94,13 @@ def clone_repos(
 
         existing_repos.extend(_existing_repos)
         clone_jobs.extend((opt, repo) for repo in new_repos)
-        if opt.prune:
-            if not opt.batch:
-                needs_confirm = True
-            prune_jobs.extend(prunable_repos)
-        elif opt.archive:
-            archive_jobs.extend(prunable_repos)
+        if prunable_repos:
+            if opt.prune:
+                if not opt.batch:
+                    needs_confirm = True
+                prune_jobs.extend(prunable_repos)
+            elif opt.archive:
+                archive_jobs.extend(prunable_repos)
 
     _log_existing_repos(existing_repos)
     _log_jobs(clone_jobs, prune_jobs, archive_jobs)
