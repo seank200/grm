@@ -9,6 +9,7 @@ from grm.util import GrmException, RemoteRepository, run_cmd
 
 ERR_LIST_REPOS = "Failed to list repositories owned by '{}'. {}"
 
+GH_HOSTNAME = "github.com"
 GH_API_ACCEPT_JSON = "application/vnd.github+json"
 GH_API_VERSION = "2026-03-10"
 

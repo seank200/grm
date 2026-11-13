@@ -134,7 +134,7 @@ def _log_results(
         ]
         failed_paths.sort()
 
-        log.info(
+        log.error(
             "ERROR: Failed to merge upstream changes of %d/%d %s. \n - %s",
             len(failed),
             len(success) + len(failed),

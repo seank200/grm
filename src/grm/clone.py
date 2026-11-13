@@ -1,11 +1,12 @@
 from collections.abc import Iterator
 from datetime import datetime
 import logging
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import shutil
 import sys
 from typing import Annotated, Optional
 import typer
+from urllib.parse import urlparse
 
 from grm.config import (
     CloneOptions,
@@ -15,7 +16,7 @@ from grm.config import (
 )
 from grm.find import find_repos
 from grm.git import GitException, GitRepository
-from grm.github import list_repos as list_github_repos
+from grm.github import list_repos as list_github_repos, GH_HOSTNAME
 from grm.util import RemoteRepository, InvalidArgsError, confirm, matches_globs
 
 
@@ -71,7 +72,10 @@ def cmd_clone(
     )])
 
 
-def clone_repos(workspace: Path, opts: list[CloneOptions]):
+def clone_repos(
+    workspace: Path,
+    opts: list[CloneOptions]
+) -> list[GitRepository]:
     clone_jobs: list[tuple[CloneOptions, RemoteRepository]] = []
     existing_repos: list[GitRepository] = []
     prune_jobs: list[GitRepository] = []
@@ -125,7 +129,7 @@ def clone_repos(workspace: Path, opts: list[CloneOptions]):
         archive_failed,
     )
 
-    return clone_success
+    return [repo for _, repo in clone_success]
 
 
 def _clone_new_repos(
@@ -267,7 +271,7 @@ def _archive_repos(
 
 
 def _list_repos(
-    path: Path,
+    workspace: Path,
     provider: str,
     owner: str,
     hostname: str | None,
@@ -275,24 +279,33 @@ def _list_repos(
     filters: list[str],
 ):
     new_repos: list[RemoteRepository] = []
-    prunable_repos: set[GitRepository] = _find_existing_repos(
-        path,
-        owner,
-        path_template
-    )
     existing_repos: list[GitRepository] = []
+    prunable_repos: set[GitRepository] = set()
+
+    if hostname is None:
+        if provider == RemoteProvider.GITHUB.value:
+            hostname = GH_HOSTNAME
+        else:
+            raise ValueError(f"Unsupported remote provider '{provider}'")
 
     url_repos_map: dict[str, list[GitRepository]] = {}
-    for repo in prunable_repos:
+    for repo in _find_local_repos(workspace, owner, path_template):
         for remote in repo.list_remotes():
-            try:
-                url_repos_map[remote.url].append(repo)
-            except KeyError:
-                url_repos_map[remote.url] = [repo]
+            url = urlparse(remote.url)
+            _path = PurePosixPath(url.path.removeprefix("/"))
+            _owner = str(_path.parent)
+
+            if url.netloc == hostname and owner == _owner:
+                try:
+                    url_repos_map[remote.url].append(repo)
+                except KeyError:
+                    url_repos_map[remote.url] = [repo]
+
+                prunable_repos.add(repo)
 
     for remote_repo in _list_remote_repos(provider, owner, hostname):
         if filters and not matches_globs(remote_repo.path, filters):
-            log.debug("Excluding '%s' (filtered)", remote_repo.path)
+            log.debug("Excluding '%s' (filtered)", remote_repo.url)
             continue
 
         repos = url_repos_map.get(remote_repo.url)
@@ -317,7 +330,7 @@ def _list_remote_repos(
     raise InvalidArgsError(f"Unsupported remote provider '{provider}'")
 
 
-def _find_existing_repos(
+def _find_local_repos(
     path: Path,
     owner: str,
     path_template: str,

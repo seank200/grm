@@ -28,7 +28,7 @@ def cmd_sync(
         "-f", "--filename",
         file_okay=True,
         help="Path to sync options file",
-    )],
+    )] = None,
 ):
     config_file = config_file or _resolve_config_file(Path.cwd())
     options = _parse_options(config_file)
@@ -36,10 +36,28 @@ def cmd_sync(
 
 
 def sync_repos(workspace: Path, options: SyncOptions):
-    clone_repos(workspace, options.clone)
+    cloned_repos = clone_repos(workspace, options.clone)
     found_repos = find_repos(workspace, options.find)
-    fetch_repos(workspace, found_repos, options.fetch)
-    merge_repos(workspace, found_repos, options.merge)
+    fetched_repos = fetch_repos(workspace, found_repos, options.fetch)
+    merged_repos = merge_repos(workspace, fetched_repos, options.merge)
+
+    if cloned_repos or merged_repos:
+        if log.isEnabledFor(logging.INFO):
+            n_success = len(cloned_repos) + len(merged_repos)
+            cloned_paths = [
+                str(repo.path.relative_to(workspace))
+                for repo in cloned_repos + merged_repos
+            ]
+            cloned_paths.sort()
+
+            log.info(
+                "Synchronized %d %s: %s",
+                n_success,
+                "repository" if n_success <= 1 else "repositories",
+                ", ".join(cloned_paths)
+            )
+    else:
+        log.warning("Nothing to sync.")
 
 
 def _parse_options(file_path: Path) -> SyncOptions:
