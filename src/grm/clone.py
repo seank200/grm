@@ -71,7 +71,7 @@ def cmd_clone(
     )])
 
 
-def clone_repos(path: Path, opts: list[CloneOptions]):
+def clone_repos(workspace: Path, opts: list[CloneOptions]):
     clone_jobs: list[tuple[CloneOptions, RemoteRepository]] = []
     existing_repos: list[GitRepository] = []
     prune_jobs: list[GitRepository] = []
@@ -80,7 +80,7 @@ def clone_repos(path: Path, opts: list[CloneOptions]):
     needs_confirm = False
     for opt in opts:
         new_repos, _existing_repos, prunable_repos = _list_repos(
-            path,
+            workspace,
             opt.provider,
             opt.owner,
             opt.hostname,
@@ -111,12 +111,12 @@ def clone_repos(path: Path, opts: list[CloneOptions]):
     if needs_confirm and sys.stdin.isatty():
         confirm()
 
-    prune_success, prune_failed = _prune_repos(path, prune_jobs)
-    archive_success, archive_failed = _archive_repos(path, archive_jobs)
-    clone_success, clone_failed = _clone_new_repos(path, clone_jobs)
+    prune_success, prune_failed = _prune_repos(workspace, prune_jobs)
+    archive_success, archive_failed = _archive_repos(workspace, archive_jobs)
+    clone_success, clone_failed = _clone_new_repos(workspace, clone_jobs)
 
     _log_results(
-        path,
+        workspace,
         clone_success,
         clone_failed,
         prune_success,

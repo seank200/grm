@@ -24,12 +24,19 @@ class InvalidArgsError(GrmException):
         field: str = "",
         file: str | os.PathLike | None = None,
     ):
-        prefix = "Invalid argument"
-        if field:
-            prefix += f" '{field}'"
-        if file:
-            prefix += f" (file '{file}')"
-        super().__init__(f"{prefix}: {message}")
+        super().__init__(message)
+        self.field = field
+        self.file = file
+
+    def __str__(self):
+        s = "Invalid "
+        s += "config " if self.file else "argument "
+        if self.field:
+            s += f" '{self.field}'"
+        if self.file:
+            s += f" (file '{self.file}')"
+
+        return f"{s}: {super().__str__()}"
 
 
 class UserAbort(BaseException):
