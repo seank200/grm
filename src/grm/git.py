@@ -30,19 +30,20 @@ class GitBranch:
     track: str | None = None
 
     REF_FORMAT: ClassVar[str] = \
-        "%(HEAD)%(refname:short):%(upstream:short):%(upstream:trackshort)"
+        "%(HEAD)%(refname):%(upstream):%(upstream:trackshort)"
 
     @staticmethod
-    def parse(line: str):
+    def parse(line: str) -> Optional["GitBranch"]:
         is_head = line[0] == "*"
         name, upstream, track = line[1:].split(":")
 
-        return GitBranch(
-            name=name,
-            is_head=is_head,
-            upstream=upstream or None,
-            track=track or None,
-        )
+        if name.startswith("refs/"):
+            return GitBranch(
+                name=name,
+                is_head=is_head,
+                upstream=upstream or None,
+                track=track or None,
+            )
 
 
 @dataclass
@@ -181,7 +182,9 @@ class GitRepository:
             if not line:
                 continue
 
-            branches.append(GitBranch.parse(line))
+            branch = GitBranch.parse(line)
+            if branch is not None:
+                branches.append(branch)
 
         return branches
 
