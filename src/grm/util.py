@@ -109,7 +109,7 @@ class ConsoleHandler(logging.StreamHandler):
             return False
 
 
-def run_cmd(cwd: Path | None, args):
+def run_cmd(cwd: Path | None, args, timeout: float | None = 10.0):
     try:
         return subprocess.run(
             args,
@@ -118,6 +118,7 @@ def run_cmd(cwd: Path | None, args):
             capture_output=True,
             text=True,
             encoding="utf-8",
+            timeout=timeout,
         )
     except subprocess.CalledProcessError as exc:
         log.debug(
@@ -126,6 +127,16 @@ def run_cmd(cwd: Path | None, args):
             cwd,
             args,
             exc.stderr,
+        )
+        raise
+    except subprocess.TimeoutExpired as exc:
+        log.debug(
+            "subprocess timeout (%f s). cwd=[%s], args=%s, output=%s\n%s",
+            exc.timeout,
+            cwd,
+            args,
+            exc.stderr,
+            exc.stdout,
         )
         raise
 

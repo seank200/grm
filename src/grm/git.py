@@ -7,6 +7,9 @@ from typing import ClassVar, Optional
 from grm.util import GrmException, run_cmd, parse_remote_url
 
 
+CLONE_TIMEOUT = 30.0
+FETCH_TIMEOUT = 16.0
+
 log = logging.getLogger(__name__)
 
 
@@ -99,9 +102,19 @@ class GitRepository:
     def clone(url: str, path: Path) -> "GitRepository":
         log.debug("Cloning '%s' (%s)", url, path)
         try:
-            run_cmd(None, ("git", "clone", url, str(path)))
+            run_cmd(
+                None,
+                ("git", "clone", url, str(path)),
+                timeout=CLONE_TIMEOUT
+            )
         except subprocess.CalledProcessError as exc:
             raise GitException(path, f"Failed to clone '{url}'") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise GitException(
+                path,
+                f"Failed to clone '{url}'. Operation timed out "
+                f"(after {exc.timeout}s)"
+            )
 
         return GitRepository(path)
 
@@ -281,15 +294,22 @@ class GitRepository:
             args.append("--prune-tags")
 
         try:
-            proc = run_cmd(self.path, args)
+            proc = run_cmd(
+                self.path,
+                args,
+                timeout=FETCH_TIMEOUT,
+            )
         except subprocess.CalledProcessError as exc:
             raise GitException(
                 self.path,
-                "Failed to fetch {}. {}".format(
-                    remote_name or 'remote',
-                    exc,
-                )
+                f"Failed to fetch {remote_name or 'remote'}",
             ) from exc
+        except subprocess.TimeoutExpired as exc:
+            raise GitException(
+                self.path,
+                f"Failed to fetch {remote_name or 'remote'}. "
+                f"Operation timed out (after {exc.timeout}s)"
+            )
 
         self.clear_cache()
         return proc
