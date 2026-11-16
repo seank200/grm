@@ -6,7 +6,7 @@ import typer
 
 from grm.config import MergeOptions
 from grm.find import find_repos, FindOptions
-from grm.git import GitRepository
+from grm.git import GitRepository, GitWorktree
 from grm.util import GrmException, InvalidArgsError
 
 
@@ -64,16 +64,17 @@ def merge_repos(
     failed: list[GitRepository] = []
 
     for repo in repos:
-        try:
-            _merge_repo(workspace, repo, options)
-        except GrmException as exc:
-            log.error(
-                "ERROR: Failed to merge upstream changes of '%s'. %s",
-                repo.path.relative_to(workspace),
-                exc,
-            )
-            failed.append(repo)
-            continue
+        for worktree in repo.list_worktrees():
+            try:
+                _merge_repo(workspace, repo, worktree, options)
+            except GrmException as exc:
+                log.error(
+                    "ERROR: Failed to merge upstream changes of '%s'. %s",
+                    worktree.path.relative_to(workspace),
+                    exc,
+                )
+                failed.append(repo)
+                continue
 
         success.append(repo)
 
@@ -84,6 +85,7 @@ def merge_repos(
 def _merge_repo(
     workspace: Path,
     repo: GitRepository,
+    worktree: GitWorktree,
     options: MergeOptions
 ):
     branch = repo.current_branch()
@@ -95,12 +97,13 @@ def _merge_repo(
     proc = repo.merge(
         branch.upstream,
         ff=options.ff,
-        ff_only=options.ff_only
+        ff_only=options.ff_only,
+        worktree=worktree,
     )
 
     log.info(
         "Merged '%s' (%s..%s). %s",
-        repo.path.relative_to(workspace),
+        worktree.path.relative_to(workspace),
         branch.name_short,
         branch.upstream_short,
         proc.stdout.rstrip("\n"),

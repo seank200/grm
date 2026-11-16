@@ -172,13 +172,18 @@ class GitRepository:
         except IndexError:
             return None
 
-    def list_branches(self, *, cache: bool = True) -> list[GitBranch]:
+    def list_branches(
+        self,
+        *,
+        cache: bool = True,
+        worktree: GitWorktree | None = None,
+    ) -> list[GitBranch]:
         if cache and self._branches is not None:
             return self._branches
 
         try:
             proc = run_cmd(
-                self.path,
+                worktree.path if worktree else self.path,
                 (
                     "git",
                     "branch",
@@ -186,7 +191,10 @@ class GitRepository:
                 )
             )
         except subprocess.CalledProcessError as exc:
-            raise GitException(self.path, "Failed to list branches") from exc
+            raise GitException(
+                worktree.path if worktree else self.path,
+                "Failed to list branches"
+            ) from exc
 
         branches: list[GitBranch] = []
         for line in proc.stdout.splitlines():
@@ -199,8 +207,13 @@ class GitRepository:
 
         return branches
 
-    def current_branch(self) -> Optional[GitBranch]:
-        for branch in self.list_branches():
+    def current_branch(
+        self,
+        *,
+        cache: bool = True,
+        worktree: GitWorktree | None = None,
+    ) -> Optional[GitBranch]:
+        for branch in self.list_branches(cache=cache, worktree=worktree):
             if branch.is_head:
                 return branch
 
@@ -287,6 +300,7 @@ class GitRepository:
         *,
         ff: bool | None = None,
         ff_only: bool = False,
+        worktree: GitWorktree | None = None,
     ) -> subprocess.CompletedProcess[str]:
         args = ["git", "merge"]
         if ff is True:
@@ -298,10 +312,13 @@ class GitRepository:
         args.append(ref)
 
         try:
-            proc = run_cmd(self.path, args)
+            proc = run_cmd(
+                worktree.path if worktree else self.path,
+                args
+            )
         except subprocess.CalledProcessError as exc:
             raise GitException(
-                self.path,
+                worktree.path if worktree else self.path,
                 f"Failed to merge '{ref}'"
             ) from exc
 
