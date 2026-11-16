@@ -100,11 +100,20 @@ class MergeOptions:
 
 
 @dataclass
+class WorktreeOptions:
+    ref: str
+
+    path_template: str = "../{ref}/{name}"
+    """Absolute, or relative from the main worktree(or bare repository) path"""
+
+
+@dataclass
 class SyncOptions:
     clone: list[CloneOptions] = field(default_factory=list)
     find: FindOptions = field(default_factory=FindOptions)
     fetch: FetchOptions = field(default_factory=FetchOptions)
     merge: MergeOptions = field(default_factory=MergeOptions)
+    worktrees: list[WorktreeOptions] = field(default_factory=list)
 
 
 @dataclass

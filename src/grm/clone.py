@@ -1,7 +1,7 @@
 from collections.abc import Iterator
 from datetime import datetime
 import logging
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePath, PurePosixPath
 import shutil
 import sys
 from typing import Annotated, Optional
@@ -75,7 +75,7 @@ def cmd_clone(
 def clone_repos(
     workspace: Path,
     opts: list[CloneOptions]
-) -> list[GitRepository]:
+) -> set[GitRepository]:
     clone_jobs: list[tuple[CloneOptions, RemoteRepository]] = []
     existing_repos: list[GitRepository] = []
     prune_jobs: list[GitRepository] = []
@@ -130,7 +130,7 @@ def clone_repos(
         archive_failed,
     )
 
-    return [repo for _, repo in clone_success]
+    return set(repo for _, repo in clone_success)
 
 
 def _clone_new_repos(
@@ -338,7 +338,7 @@ def _find_local_repos(
 ):
     sub_path_glob = path_template.format(owner=owner, name="*")
     return find_repos(path, FindOptions(
-        depth=1,
+        depth=len(PurePath(sub_path_glob).parts),
         hidden="." in path_template,
         filters=[sub_path_glob]
     ))

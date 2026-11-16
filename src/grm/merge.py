@@ -54,11 +54,12 @@ def merge_repos(
     repos: Collection[GitRepository],
     options: MergeOptions,
 ) -> list[GitRepository]:
-    log.info(
-        "Merging upstream changes of %d %s...",
-        len(repos),
-        "repository" if len(repos) <= 1 else "repositories",
-    )
+    if repos:
+        log.info(
+            "Merging %d %s...",
+            len(repos),
+            "repository" if len(repos) <= 1 else "repositories",
+        )
 
     success: list[GitRepository] = []
     failed: list[GitRepository] = []
@@ -79,6 +80,7 @@ def merge_repos(
         success.append(repo)
 
     _log_results(workspace, success, failed)
+
     return success
 
 
@@ -88,7 +90,7 @@ def _merge_repo(
     worktree: GitWorktree,
     options: MergeOptions
 ):
-    branch = repo.current_branch()
+    branch = repo.current_branch(worktree=worktree)
     if branch is None:
         raise GrmException("HEAD is detached")
     if branch.upstream is None:
@@ -123,7 +125,7 @@ def _log_results(
         success_paths.sort()
 
         log.info(
-            "Merged upstream changes of %d/%d %s: %s",
+            "Merged %d/%d %s: %s",
             len(success),
             len(success) + len(failed),
             "repository" if len(success) <= 1 else "repositories",

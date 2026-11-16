@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 import logging
-from pathlib import Path
+from pathlib import Path, PurePath
 import subprocess
 from typing import ClassVar, Optional
 
@@ -184,6 +184,44 @@ class GitRepository:
             return worktrees[0]
         except IndexError:
             return None
+
+    def create_worktree(self, path: PurePath, ref: str) -> GitWorktree:
+        worktree_path = (self.path / path).resolve()
+
+        try:
+            run_cmd(
+                self.path,
+                ("git", "worktree", "add", str(worktree_path), ref)
+            )
+        except subprocess.CalledProcessError as exc:
+            raise GitException(
+                self.path,
+                "Failed to create worktree '{}' ({})".format(
+                    worktree_path,
+                    ref,
+                )
+            ) from exc
+
+        self.clear_cache(worktree=True, branch=False, remote=False)
+        for worktree in self.list_worktrees():
+            if worktree.path == worktree_path:
+                return worktree
+
+        raise GitException(
+            self.path,
+            "Failed to create worktree '{}' ({})".format(
+                worktree_path,
+                ref
+            )
+        )
+
+    def prune_worktrees(self):
+        try:
+            run_cmd(self.path, ("git", "worktree", "prune"))
+        except subprocess.CalledProcessError as exc:
+            raise GitException(self.path, "Failed to prune worktrees") from exc
+
+        self.clear_cache(worktree=True, branch=False, remote=False)
 
     def list_branches(
         self,
