@@ -1,24 +1,23 @@
 import dataclasses
-from dataclasses import dataclass, field, asdict, is_dataclass
+from dataclasses import dataclass, field, is_dataclass
 import enum
 import json
 import logging
-from pathlib import Path
-import sys
+from pathlib import Path, PurePath
 import types
 from collections.abc import Mapping, Sequence
 from typing import (
-    Annotated, Any, Literal, Union, get_args, get_origin, get_type_hints,
+    Any, Literal, Union, get_args, get_origin, get_type_hints,
 )
 import typer
 import yaml
 
-from grm.util import GrmException, InvalidArgsError, confirm
+from grm.util import GrmException, InvalidArgsError
 
 
 GRM_DIR = Path(".grm")
 ARCHIVE_DIR = GRM_DIR / "archive"
-CONFIG_FILE_NAME = "grmconfig.yaml"
+CONFIG_FILE_NAME = ".grmconfig.yaml"
 CONFIG_FILE_ENCODING = "utf-8"
 
 app = typer.Typer(help="Manage app configuration")
@@ -36,6 +35,9 @@ class ConfigFileFormat(enum.Enum):
     @property
     def suffix(self) -> str:
         return f".{self.value}"
+
+    def matches(self, path: PurePath) -> bool:
+        return self.suffix == path.suffix
 
 
 @dataclass
@@ -109,41 +111,95 @@ class SyncOptions:
         return fromdict(value, SyncOptions)
 
 
-@app.command("init", help="Create a template config file")
-def cmd_config_init(
-    file_format: Annotated[ConfigFileFormat, typer.Option(
-        "-o", "--output",
-        help="Output format of config file",
-    )] = ConfigFileFormat.YAML,
-):
-    file_path = (Path.cwd() / CONFIG_FILE_NAME)\
-            .with_suffix("." + file_format.value)
+@dataclass
+class WorkspaceOptions:
+    path: Path
+    sync: SyncOptions = field(default_factory=SyncOptions)
 
-    for fmt in ConfigFileFormat:
-        existing_path = file_path.with_suffix("." + fmt.value)
-        if existing_path.exists():
-            if sys.stdin.isatty():
-                confirm(f"Overwrite existing config file '{existing_path}'?")
-            else:
-                raise GrmException(
-                    f"Config file already exists at: '{existing_path}'"
-                )
-            existing_path.unlink()
 
-    options = SyncOptions(clone=[CloneOptions(owner="")])
-    options_dict = asdict(options)
+@dataclass
+class Config:
+    workspaces: list[WorkspaceOptions] = field(default_factory=list)
 
-    with file_path.open("w", encoding=CONFIG_FILE_ENCODING) as file:
-        if file_format == ConfigFileFormat.YAML:
-            yaml.safe_dump(options_dict, file, allow_unicode=True)
 
-        elif file_format == ConfigFileFormat.JSON:
-            json.dump(options_dict, file, indent=2)
+__config: Config | None = None
+
+
+def get_config() -> Config:
+    global __config
+    if __config is None:
+        file_path = resolve_config_file()
+        if file_path is None:
+            __config = Config()
+        else:
+            __config = load_config(file_path)
+    return __config
+
+
+def load_config(file_path: Path) -> Config:
+    with file_path.open("r", encoding=CONFIG_FILE_ENCODING) as file:
+        if ConfigFileFormat.YAML.matches(file_path):
+            try:
+                data = yaml.safe_load(file)
+            except yaml.YAMLError as exc:
+                raise InvalidArgsError("Invalid YAML", file=file_path) from exc
+
+        elif ConfigFileFormat.JSON.matches(file_path):
+            try:
+                data = json.load(file)
+            except json.JSONDecodeError as exc:
+                raise InvalidArgsError("Invalid JSON", file=file_path) from exc
 
         else:
-            raise ValueError(f"Invalid output file format: '{file_format}'")
+            raise GrmException(
+                f"Unsupported config file extension '{file_path.suffix}'"
+            )
 
-    log.info("Created configuration file template at: %s", file_path)
+    if type(data) is not dict:
+        raise InvalidArgsError(
+            "Config file must contain an object",
+            file=file_path,
+        )
+
+    return fromdict(data, Config)
+
+
+def resolve_config_file() -> Path | None:
+    path = Path.cwd()
+    parent: Path | None = None
+
+    while path != parent or parent is None:
+        for file_format in ConfigFileFormat:
+            file_path = (path / CONFIG_FILE_NAME).with_suffix(
+                file_format.suffix
+            )
+
+            try:
+                if file_path.is_file():
+                    return file_path
+            except PermissionError:
+                log.warning(
+                    "No permission to read metadata of path '%s'",
+                    file_path
+                )
+                break
+            except TimeoutError:
+                raise GrmException(
+                    "Operation timed out while reading metadata of "
+                    f"'{file_path}'"
+                )
+            except OSError:
+                raise GrmException(
+                    f"Failed to read metadata of '{file_path}'",
+                )
+
+        path = path.parent
+        parent = path.parent
+
+    log.warning(
+        "No config file('%s') found in cwd or any of its parents.",
+        CONFIG_FILE_NAME,
+    )
 
 
 def fromdict[T](value: dict, dataclass_type: type[T]) -> T:
