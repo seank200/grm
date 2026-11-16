@@ -106,10 +106,6 @@ class SyncOptions:
     fetch: FetchOptions = field(default_factory=FetchOptions)
     merge: MergeOptions = field(default_factory=MergeOptions)
 
-    @staticmethod
-    def parse(value) -> "SyncOptions":
-        return fromdict(value, SyncOptions)
-
 
 @dataclass
 class WorkspaceOptions:
@@ -123,6 +119,19 @@ class Config:
 
 
 __config: Config | None = None
+
+
+@app.command("which", help="Show resolved config file path")
+def cmd_which():
+    file_path = resolve_config_file()
+    if file_path:
+        print(file_path)
+    else:
+        log.warning(
+            "Config file '%s' not found in cwd or any of its parents",
+            file_path,
+        )
+        raise typer.Exit(1)
 
 
 def get_config() -> Config:
@@ -277,6 +286,10 @@ def _convert(value, tp, path: str):
         }
 
     if isinstance(tp, type):
+        if issubclass(tp, PurePath) and isinstance(value, str):
+            path = tp(value)
+            return path.expanduser().resolve() if tp is Path else path
+
         if is_dataclass(tp):
             return _convert_dataclass(value, tp, path)
 
