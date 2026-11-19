@@ -4,7 +4,7 @@ from pathlib import Path
 
 from grm.config import MergeOptions
 from grm.git import GitRepository, GitWorktree
-from grm.util import GrmException
+from grm.util import GrmException, TqdmWrapper
 
 
 log = logging.getLogger(__name__)
@@ -27,24 +27,26 @@ def merge_repos(
     success: list[GitRepository] = []
     failed: list[GitRepository] = []
 
-    for repo in repos:
-        is_success = True
-        for worktree in repo.list_worktrees():
-            try:
-                _merge_upstream(workspace, repo, worktree, options)
-            except GrmException as exc:
-                is_success = False
-                log.error(
-                    "ERROR: Failed to merge '%s'. %s",
-                    repo.path.relative_to(workspace),
-                    exc,
-                )
-                break
+    with TqdmWrapper(desc="Merging", total=len(repos)) as bar:
+        for repo in repos:
+            is_success = True
+            for worktree in repo.list_worktrees():
+                try:
+                    _merge_upstream(workspace, repo, worktree, options)
+                except GrmException as exc:
+                    is_success = False
+                    log.error(
+                        "ERROR: Failed to merge '%s'. %s",
+                        repo.path.relative_to(workspace),
+                        exc,
+                    )
+                    break
 
-        if is_success:
-            success.append(repo)
-        else:
-            failed.append(repo)
+            if is_success:
+                success.append(repo)
+            else:
+                failed.append(repo)
+            bar.update(1)
 
     log.info("Merge complete.\n")
     _log_results(workspace, success, failed)

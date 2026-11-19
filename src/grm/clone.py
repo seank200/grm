@@ -9,7 +9,7 @@ from grm.config import CloneOptions, FindOptions, RemoteProvider
 from grm.find import find_repos
 from grm.git import GitException, GitRepository
 from grm.github import GH_HOSTNAME, list_repos as github_list_repos
-from grm.util import GrmException, RemoteRepository, matches_globs
+from grm.util import GrmException, RemoteRepository, TqdmWrapper, matches_globs
 
 
 log = logging.getLogger(__name__)
@@ -155,20 +155,23 @@ def _clone_repos(
     success: set[GitRepository] = set()
     failed: list[RemoteRepository] = []
 
-    for clone_path, remote_repo in jobs:
-        log.info(
-            "Cloning '%s'",
-            remote_repo.url,
-        )
-        try:
-            repo = GitRepository.clone(remote_repo.url, clone_path)
-        except GitException as exc:
-            failed.append(remote_repo)
-            log.error("ERROR: %s", exc)
-            continue
+    with TqdmWrapper("Cloning", total=len(jobs)) as bar:
+        for clone_path, remote_repo in jobs:
+            log.info(
+                "Cloning '%s'",
+                remote_repo.url,
+            )
+            try:
+                repo = GitRepository.clone(remote_repo.url, clone_path)
+            except GitException as exc:
+                failed.append(remote_repo)
+                log.error("ERROR: %s", exc)
+                continue
+            finally:
+                bar.update(1)
 
-        success.add(repo)
-        log.debug("Cloned '%s' (%s)", remote_repo.url, clone_path)
+            success.add(repo)
+            log.debug("Cloned '%s' (%s)", remote_repo.url, clone_path)
 
     return success, failed
 

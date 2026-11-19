@@ -4,6 +4,7 @@ from pathlib import Path
 
 from grm.config import FetchOptions
 from grm.git import GitException, GitRepository
+from grm.util import TqdmWrapper
 
 
 log = logging.getLogger(__name__)
@@ -26,27 +27,30 @@ def fetch_repos(
     success: list[GitRepository] = []
     failed: list[GitRepository] = []
 
-    for repo in repos:
-        log.info("Fetching '%s'", repo.path.relative_to(workspace))
+    with TqdmWrapper(desc="Fetching", total=len(repos)) as bar:
+        for repo in repos:
+            log.info("Fetching '%s'", repo.path.relative_to(workspace))
 
-        try:
-            proc = repo.fetch()
-        except GitException as exc:
-            failed.append(repo)
-            log.error("ERROR: %s. %s", exc, exc.__cause__ or "")
-            continue
+            try:
+                proc = repo.fetch()
+            except GitException as exc:
+                failed.append(repo)
+                log.error("ERROR: %s. %s", exc, exc.__cause__ or "")
+                continue
+            finally:
+                bar.update(1)
 
-        success.append(repo)
+            success.append(repo)
 
-        output = proc.stderr.rstrip("\n")
-        if output:
-            log.info(
-                "Fetched '%s'. %s",
-                repo.path.relative_to(workspace),
-                output,
-            )
-        else:
-            log.debug("Fetched '%s'", repo.path)
+            output = proc.stderr.rstrip("\n")
+            if output:
+                log.info(
+                    "Fetched '%s'. %s",
+                    repo.path.relative_to(workspace),
+                    output,
+                )
+            else:
+                log.debug("Fetched '%s'", repo.path)
 
     log.info("Fetch complete.\n")
     _log_results(workspace, success, failed)

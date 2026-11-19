@@ -4,7 +4,7 @@ from pathlib import Path, PurePath
 import subprocess
 from typing import ClassVar, Optional
 
-from grm.util import GrmException, run_cmd, parse_remote_url
+from grm.util import GrmException, run_cmd
 
 
 CLONE_TIMEOUT = 30.0
@@ -64,9 +64,6 @@ class GitBranch:
 class GitRemote:
     name: str
     url: str
-
-    def parse_url(self):
-        return parse_remote_url(self.url)
 
 
 @dataclass

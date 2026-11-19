@@ -1,11 +1,12 @@
 from dataclasses import dataclass
-import enum
 from fnmatch import fnmatch
 import logging
 import os
 from pathlib import Path, PurePosixPath
 import subprocess
-from typing import Literal, Union
+import sys
+from tqdm.auto import tqdm
+from typing import Literal, Optional, Union
 from urllib.parse import urlparse
 
 
@@ -193,11 +194,57 @@ class Text:
         return NotImplemented
 
 
+class TqdmWrapper:
+    def __init__(
+        self,
+        desc: Optional[str],
+        total: Optional[Union[int, float]],
+        color: AnsiColor = "green",
+    ):
+        self.tqdm: Optional[tqdm] = None
+
+        self.tqdm_initargs = {
+            "desc": desc,
+            "total": total,
+            "leave": False,
+            "ascii": os.name != "posix",
+            "disable": not sys.stderr.isatty(),
+            "bar_format": "{l_bar}{bar}|{n_fmt}/{total_fmt}",
+            "colour": color,
+        }
+
+    def __enter__(self) -> tqdm:
+        self.tqdm = tqdm(**self.tqdm_initargs)
+        ConsoleHandler.redirect_tqdm += 1
+        return self.tqdm
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        if self.tqdm is not None:
+            self.tqdm.close()
+
+        ConsoleHandler.redirect_tqdm -= 1
+        return False
+
+
 class ConsoleHandler(logging.StreamHandler):
-    def __init__(self, stream, color: bool | None = None):
+    redirect_tqdm: int = 0
+
+    def __init__(self, stream=sys.stderr, color: bool | None = None):
         super().__init__(stream)
         self.color_preference = color
         self.color_enabled = self.should_enable_color()
+
+    def emit(self, record: logging.LogRecord):
+        if ConsoleHandler.redirect_tqdm == 0:
+            return super().emit(record)
+
+        try:
+            tqdm.write(self.format(record), file=self.stream)
+            self.flush()
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except:  # noqa pylint: disable=bare-except
+            self.handleError(record)
 
     def format(self, record: logging.LogRecord):
         if record.args:
@@ -291,11 +338,3 @@ def matches_globs(value: str, globs: list[str]) -> bool:
 def confirm(message: str = "Continue?"):
     if input(f"{message} (y/N) ").lower() not in ('y', 'yes'):
         raise UserAbort()
-
-
-def parse_remote_url(url: str):
-    """Parse remote repository owner and name from its URL"""
-    path = PurePosixPath(urlparse(url).path.removeprefix("/"))
-    owner = str(path.parent)
-    name = path.name.removesuffix(".git")
-    return owner, name
