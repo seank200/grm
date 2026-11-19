@@ -8,10 +8,7 @@ from typing import Annotated, Optional
 import typer
 
 from grm.config import app as config_app
-from grm.clone import app as clone_app
-from grm.fetch import app as fetch_app
 from grm.find import app as find_app
-from grm.merge import app as merge_app
 from grm.sync import app as sync_app
 from grm.util import ConsoleHandler, GrmException, InvalidArgsError, UserAbort
 
@@ -22,10 +19,7 @@ APP_HELP = f"Git Repository Manager v{__version__}"
 app = typer.Typer(name=APP_NAME, help=APP_HELP)
 
 app.add_typer(config_app, name="config")
-app.add_typer(clone_app)
-app.add_typer(fetch_app)
 app.add_typer(find_app)
-app.add_typer(merge_app)
 app.add_typer(sync_app)
 
 log = logging.getLogger(__name__)

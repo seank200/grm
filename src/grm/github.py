@@ -12,8 +12,9 @@ ERR_LIST_REPOS = "Failed to list repositories owned by '{}'. {}"
 GH_HOSTNAME = "github.com"
 GH_API_ACCEPT_JSON = "application/vnd.github+json"
 GH_API_VERSION = "2026-03-10"
+GH_TIMEOUT = 30.0
 
-PER_PAGE = 64
+PER_PAGE = 100  # Must be <=100 (a GitHub cap)
 
 
 class GitHubException(GrmException):
@@ -50,7 +51,7 @@ def list_repos(
                 raise GeneratorExit()
 
         log.debug(
-            "GitHub list_repos owner='%s', page=%d (%d-%d)",
+            "Listing GitHub repositories of '%s'... (page=%d, %d-%d)",
             owner,
             page,
             PER_PAGE * (page-1),
@@ -120,7 +121,7 @@ def _gh_api(endpoint: str, hostname: str | None):
         args.append("--hostname")
         args.append(hostname)
     try:
-        result = run_cmd(None, args)
+        result = run_cmd(None, args, timeout=GH_TIMEOUT)
     except FileNotFoundError:
         raise GitHubException(
             "GitHub CLI (gh) not found. Check that GitHub CLI is "

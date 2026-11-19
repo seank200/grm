@@ -7,7 +7,7 @@ from pathlib import Path, PurePath
 import types
 from collections.abc import Mapping, Sequence
 from typing import (
-    Any, Literal, Union, get_args, get_origin, get_type_hints,
+    Any, Literal, Optional, Union, get_args, get_origin, get_type_hints,
 )
 import typer
 import yaml
@@ -45,32 +45,32 @@ class CloneOptions:
     owner: str
     """Remote repository owner (account or organization/group name)"""
 
-    provider: str = "github"
+    enabled: bool = True
+
+    provider: RemoteProvider = RemoteProvider.GITHUB
     """Remote repository provider name (possible values: 'github')"""
 
     hostname: str | None = None
     """Hostname of the remote provider (for self-hosted providers)"""
 
     filters: list[str] = field(default_factory=list)
-    """Repository clone URL path filter"""
+    """Repository clone URL path (relative) glob pattern"""
 
-    path_template: str = "{name}"
+    path: str = "{name}"
     """
     Python template string for local clone directory path
     (supported fields: 'owner', 'name')
+    (relative paths will be resolved from the workspace path)
     """
 
     prune: bool = False
-    """Permanently delete repositories that no longer exist in remote"""
+    """Delete (or archive) repositories that no longer exist in remote"""
 
-    archive: bool = True
+    archive: Optional[str] = None
     """
-    Move repositories that no longer exist in remote to an
-    archive directory
+    Move prunable repositories to this location instead of deleting them
+    (relative paths will be resolved from the repository main worktree path)
     """
-
-    batch: bool = False
-    """Disable confirmation prompts before pruning repositories"""
 
 
 @dataclass
@@ -82,11 +82,12 @@ class FindOptions:
     """Include hidden files (starting with '.') in search"""
 
     filters: list[str] = field(default_factory=list)
-    """Repository path filter (relative from search root path)"""
+    """Repository path glob pattern (relative from search root path)"""
 
 
 @dataclass
 class FetchOptions:
+    enabled: bool = True
     all: bool = False
     prune: bool = False
     tags: bool | None = None
@@ -95,16 +96,18 @@ class FetchOptions:
 
 @dataclass
 class MergeOptions:
+    enabled: bool = True
     ff: bool | None = None
     ff_only: bool = False
 
 
 @dataclass
 class WorktreeOptions:
-    ref: str
-
-    path_template: str = "../{ref}/{name}"
+    path: str
     """Absolute, or relative from the main worktree(or bare repository) path"""
+
+    ref: str
+    """Commit-ish ref to check out"""
 
 
 @dataclass
@@ -119,6 +122,7 @@ class SyncOptions:
 @dataclass
 class WorkspaceOptions:
     path: Path
+    name: str = ""
     sync: SyncOptions = field(default_factory=SyncOptions)
 
 

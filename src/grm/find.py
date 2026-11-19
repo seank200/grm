@@ -105,7 +105,7 @@ def find_repos(path: Path, opts: FindOptions) -> set[GitRepository]:
         repositories = "repository" if len(repos) == 1 else "repositories"
         log.debug("Found %d %s in '%s'", len(repos), repositories, path)
     else:
-        log.warning("No repositories found in '%s'", path)
+        log.debug("No repositories found in '%s'", path)
 
     return repos
 

@@ -223,6 +223,18 @@ class GitRepository:
 
         self.clear_cache(worktree=True, branch=False, remote=False)
 
+    def remove_worktree(self, worktree: GitWorktree):
+        try:
+            run_cmd(
+                self.path,
+                ("git", "worktree", "remove", str(worktree.path)),
+            )
+        except subprocess.CalledProcessError as exc:
+            raise GitException(
+                self.path,
+                f"Failed to remove worktree '{worktree.path}'"
+            ) from exc
+
     def list_branches(
         self,
         *,
