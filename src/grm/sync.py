@@ -15,7 +15,7 @@ app = typer.Typer()
 log = logging.getLogger(__name__)
 
 
-@app.command("sync")
+@app.command("sync", help="Synchronize remote changes")
 def cmd_sync(
     workspace_name: Annotated[Optional[str], typer.Argument(
         help="Name of the workspace to sync (sync all workspaces by default)"
