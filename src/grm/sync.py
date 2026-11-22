@@ -1,11 +1,13 @@
 import logging
+from pathlib import Path
 from typing import Annotated, Optional
 import typer
 
 from grm.clone import clone_repos
-from grm.config import get_config
+from grm.config import WorktreeOptions, get_config
 from grm.fetch import fetch_repos
 from grm.find import find_repos
+from grm.git import GitRepository
 from grm.merge import merge_repos
 
 
@@ -39,6 +41,10 @@ def cmd_sync(
             existing_repos,
             workspace.sync.fetch,
         )
+
+        for repo in found_repos:
+            sync_worktrees(workspace.path, repo, workspace.sync.worktrees)
+
         merged_repos = merge_repos(
             workspace.path,
             existing_repos,
@@ -56,3 +62,30 @@ def cmd_sync(
         )
 
     log.info("Sync complete.")
+
+
+def sync_worktrees(
+    workspace: Path,
+    repo: GitRepository,
+    options_list: list[WorktreeOptions]
+):
+    existing_paths: set[Path] = set()
+    for worktree in repo.list_worktrees():
+        existing_paths.add(worktree.path.resolve())
+
+    for options in options_list:
+        worktree_path = Path(options.path.format(name=repo.name))
+        if not worktree_path.is_absolute():
+            worktree_path = repo.path / worktree_path
+        worktree_path = worktree_path.resolve()
+
+        if worktree_path in existing_paths:
+            continue
+
+        worktree = repo.create_worktree(worktree_path, options.ref)
+        log.info(
+            "Created worktree '%s' (%s) <- '%s'",
+            worktree_path,
+            options.ref,
+            repo.path.relative_to(workspace),
+        )
